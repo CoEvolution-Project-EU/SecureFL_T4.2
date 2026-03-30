@@ -1,0 +1,29 @@
+server:
+  strategy: FedGreed
+  fraction_fit: 1.0
+  fraction_eval: 1.0
+  dataset_size: 1.0
+  num_rounds: 50
+  batch_size: 64
+client:
+  num_clients: 10
+  batch_size: 64
+  local_epochs: 5
+model:
+  name: MNIST
+  learning_rate: 0.001
+attack:
+  activation_round: 10
+  num_malicious_clients: 3
+  type: Gaussian Noise
+  mean: 0.1
+  std: 0.1
+defence:
+  activation_round: 1
+general:
+  use_wandb: false
+  random_seed: 42
+backend:
+  client_resources:
+    num_cpus: 2.0
+    num_gpus: 0.0

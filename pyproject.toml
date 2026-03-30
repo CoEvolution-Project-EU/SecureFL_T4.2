@@ -1,0 +1,36 @@
+[project]
+name = "src"
+version = "0.1.0"
+description = ""
+authors = [
+    { name = "Emmanouil Kritharakis", email = "kritharakismanolis@gmail.com" }
+]
+readme = "README.md"
+requires-python = ">=3.11,<4.0"
+dependencies = [
+    "flwr[simulation] (>=1.14.0)",
+    "flwr-datasets[vision] (>=0.4.0)",
+    "torch (==2.2.1)",
+    "torchvision (==0.17.1)",
+    "wandb (==0.19.9)",
+    "numpy (<2)",
+    "scikit-learn (==1.6.1)",
+    "pydantic (>=2.10.5,<3.0.0)",
+    "pydantic-settings (>=2.7.1,<3.0.0)",
+    "loguru (>=0.7.3,<0.8.0)",
+    "click (>=8.1.8,<9.0.0)",
+    "yq (>=3.4.3,<4.0.0)",
+    "pre-commit (>=4.2.0,<5.0.0)"
+]
+
+[tool.poetry.scripts]
+simulation = "scripts.run_simulation:simulate"
+train-server-model = "scripts.train_server_model:main"
+partition-dataset = "scripts.partition_dataset:main"
+
+[tool.poetry.group.dev.dependencies]
+pre-commit = "^4.1.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
