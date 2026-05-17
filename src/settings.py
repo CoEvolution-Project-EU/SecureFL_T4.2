@@ -54,7 +54,7 @@ class Server(BaseModel):
             "Krum",
             "Multi-Krum",
             "Bulyan",
-            "Loss-based Clustering"
+            "Loss-based Clustering",
         ]
         if value not in strategy_types:
             raise ValueError(f"Under server configuration: {info.field_name} must be in {strategy_types}. Got {value}")

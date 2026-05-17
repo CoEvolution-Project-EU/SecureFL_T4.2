@@ -8,6 +8,7 @@ from loguru import logger
 from src.client_app import get_client_fn
 from src.server_app import get_server_fn
 from src.settings import settings
+from src.task import generate_assessment_report
 
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
@@ -32,6 +33,9 @@ def simulate() -> None:
         end_time = time.time()
         training_time = end_time - start_time
         logger.info(f"Training time: {training_time.__round__(2)} sec")
+
+        # Generate the assessment report right after Flower execution
+        generate_assessment_report()
 
     except Exception as e:
         logger.error(f"Error in {settings.model.name} Federated Scenario, processing: {str(e)}")

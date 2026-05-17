@@ -1,14 +1,17 @@
+import json
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+from loguru import logger
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+from yaml import safe_load
 
 from src.attacks import add_gaussian_noise, flip_labels, flip_sign
 from src.models import MODELS, ModelConfig
@@ -189,8 +192,12 @@ def load_data(model_name: str, partition_id: int, num_partitions: int) -> Tuple[
     return train_dataloader, test_dataloader
 
 
+current_run_save_path = None
+
+
 def create_run_dir() -> tuple[Path, str]:
     """Create a directory where to save results from this run."""
+    global current_run_save_path
     # Create output directory given current timestamp
     current_time = datetime.now()
     run_dir = current_time.strftime("%Y-%m-%d/%H-%M-%S")
@@ -199,4 +206,226 @@ def create_run_dir() -> tuple[Path, str]:
     save_path.mkdir(parents=True, exist_ok=False)
     shutil.copy(settings.config_path, save_path)
 
+    current_run_save_path = save_path
     return save_path, run_dir
+
+
+def generate_assessment_report() -> None:
+    """Generates the assessment report JSON file and saves it in the current run's directory."""
+    global current_run_save_path
+
+    if not current_run_save_path:
+        logger.warning("No run save path found. Assessment report could not be generated.")
+        return
+
+    # Helper function to retrieve or compute run severity
+    def get_run_severity(run_dir: Path) -> str:
+        report_path = run_dir / "assessment_report.json"
+        if report_path.exists():
+            try:
+                with open(report_path) as f:
+                    rep = json.load(f)
+                    items = rep.get("report", [])
+                    if items:
+                        # Return the severity of the last item in the report
+                        return items[-1].get("severity", "low")
+            except Exception:
+                pass
+
+        results_path = run_dir / "results.json"
+        if results_path.exists():
+            try:
+                with open(results_path) as f:
+                    results_data = json.load(f)
+                    evaluations = results_data.get("centralized_evaluate", [])
+                    config_files = list(run_dir.glob("*.yaml"))
+                    act_round = 0
+                    if config_files:
+                        with open(config_files[0]) as cf:
+                            cfg = safe_load(cf)
+                            attack_cfg = cfg.get("attack", {})
+                            act_round = attack_cfg.get("activation_round", 0) if attack_cfg else 0
+
+                    pre_round = max(0, act_round - 1)
+                    pre_acc = 0.0
+                    final_acc = 0.0
+                    if evaluations:
+                        for entry in evaluations:
+                            if entry.get("round") == pre_round:
+                                pre_acc = entry.get("centralized_accuracy", 0.0)
+                                break
+                        else:
+                            pre_acc = evaluations[0].get("centralized_accuracy", 0.0)
+                        final_acc = evaluations[-1].get("centralized_accuracy", 0.0)
+                    degradation = pre_acc - final_acc
+                    if degradation < 3.0:
+                        return "low"
+                    elif degradation <= 10.0:
+                        return "medium"
+                    else:
+                        return "high"
+            except Exception:
+                pass
+        return "low"
+
+    # 1. Report Timestamp
+    timestamp_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    # 2. Dataset Name
+    dataset_name = settings.model.name
+
+    # 3. Scan outputs/ for all matching runs of this dataset
+    outputs_dir = Path.cwd() / "outputs"
+    matching_runs = []
+
+    # We find all directories that contain results.json and a matching dataset in their config
+    if outputs_dir.exists():
+        for results_file in outputs_dir.glob("**/results.json"):
+            rd = results_file.parent
+            yaml_files = list(rd.glob("*.yaml"))
+            if not yaml_files:
+                continue
+            try:
+                with open(yaml_files[0]) as f:
+                    cfg = safe_load(f)
+                    model_cfg = cfg.get("model", {})
+                    if model_cfg.get("name") == dataset_name:
+                        matching_runs.append(rd)
+            except Exception:
+                continue
+
+    # Chronologically sort the matching runs
+    matching_runs = sorted(list(set(matching_runs)), key=lambda x: str(x))
+
+    # If the current run directory is not in matching_runs, make sure it is added and sorted
+    if current_run_save_path not in matching_runs:
+        matching_runs.append(current_run_save_path)
+        matching_runs = sorted(list(set(matching_runs)), key=lambda x: str(x))
+
+    # 4. Report ID Counter (total number of reports created across ALL runs in outputs/)
+    report_counter = 1
+    if outputs_dir.exists():
+        for report_file in outputs_dir.glob("**/assessment_report.json"):
+            if current_run_save_path in report_file.parents:
+                continue
+            report_counter += 1
+
+    # 5. Report ID
+    model_uuid = ""
+    model_version = ""
+    report_id = f"REP-TOOL-005-{{model_uuid}}-{{model_version}}-{timestamp_utc}-{report_counter:04d}"
+
+    # 6. Current run's severity calculation
+    results_path = current_run_save_path / "results.json"
+    pre_acc = 0.0
+    final_acc = 0.0
+    evaluations = []
+
+    if results_path.exists():
+        try:
+            with open(results_path) as f:
+                results_data = json.load(f)
+                evaluations = results_data.get("centralized_evaluate", [])
+        except Exception as e:
+            logger.error(f"Failed to read results.json for severity calculation: {e}")
+
+    act_round = settings.attack.activation_round
+    pre_round = max(0, act_round - 1)
+
+    if evaluations:
+        for entry in evaluations:
+            if entry.get("round") == pre_round:
+                pre_acc = entry.get("centralized_accuracy", 0.0)
+                break
+        else:
+            pre_acc = evaluations[0].get("centralized_accuracy", 0.0)
+        final_acc = evaluations[-1].get("centralized_accuracy", 0.0)
+
+    degradation = pre_acc - final_acc
+
+    if degradation < 3.0:
+        severity = "low"
+    elif degradation <= 10.0:
+        severity = "medium"
+    else:
+        severity = "high"
+
+    logger.info(
+        f"Degradation analysis: Pre-attack Round {pre_round} Acc={pre_acc:.2f}%, "
+        f"Final Round Acc={final_acc:.2f}%. Degradation={degradation:.2f}%. Severity={severity}"
+    )
+
+    # 7. Dynamically assemble report items list from matching_runs
+    report_items = []
+    for index, rd in enumerate(matching_runs, start=1):
+        if rd == current_run_save_path:
+            # Current run: Build item using current config settings
+            item = {
+                "attack_id": "ATK-002",
+                "defence_id": ["DEF-001"],
+                "attack_execution_id": f"ATK-002-RUN-{index:04d}",
+                "category": "unsafe_output",
+                "confidence": "medium",
+                "occurrence": "systematic",
+                "severity": severity,
+                "general_info": "",
+            }
+        else:
+            # Historic run: Try to load its saved item from its assessment_report.json
+            loaded_item = None
+            report_path = rd / "assessment_report.json"
+            if report_path.exists():
+                try:
+                    with open(report_path) as f:
+                        rep = json.load(f)
+                        items = rep.get("report", [])
+                        if items:
+                            # Since this historic run was the index-th run in its time,
+                            # it would have had the item at index-1 representing this run.
+                            if len(items) >= index:
+                                loaded_item = items[index - 1]
+                            else:
+                                loaded_item = items[-1]
+                except Exception:
+                    pass
+
+            if loaded_item is not None:
+                item = loaded_item
+            else:
+                # Fallback if no report exists or loading failed
+                run_severity = get_run_severity(rd)
+                item = {
+                    "attack_id": "ATK-002",
+                    "defence_id": ["DEF-001"],
+                    "attack_execution_id": f"ATK-002-RUN-{index:04d}",
+                    "category": "unsafe_output",
+                    "confidence": "medium",
+                    "occurrence": "systematic",
+                    "severity": run_severity,
+                    "general_info": "",
+                }
+        report_items.append(item)
+
+    # 8. Assemble the complete report
+    assessment_report = {
+        "report_id": report_id,
+        "report_type": "assessment_report",
+        "timestamp_utc": timestamp_utc,
+        "model_uuid": model_uuid,
+        "model_version": model_version,
+        "dataset": dataset_name,
+        "tool_id": "TOOL-005",
+        "has_defence": True,
+        "report": report_items,
+    }
+
+    # 9. Save to outputs/YYYY-MM-DD/HH-MM-SS/assessment_report.json
+    save_file_path = current_run_save_path / "assessment_report.json"
+    try:
+        with open(save_file_path, "w", encoding="utf-8") as f:
+            json.dump(assessment_report, f, indent=4)
+        logger.info(f"Assessment report successfully created at: {save_file_path}")
+        # Print a beautiful representation of the report
+        logger.info(f"Generated Report JSON:\n{json.dumps(assessment_report, indent=4)}")
+    except Exception as e:
+        logger.error(f"Failed to save assessment report: {e}")

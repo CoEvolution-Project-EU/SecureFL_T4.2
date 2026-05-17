@@ -1,5 +1,5 @@
 server:
-  strategy: Loss-based Clustering
+  strategy: FedGreed
   fraction_fit: 1.0
   fraction_eval: 1.0
   dataset_size: 1.0
@@ -10,12 +10,12 @@ client:
   batch_size: 64
   local_epochs: 5
 model:
-  name: MNIST
+  name: CIFAR10
   learning_rate: 0.001
 attack:
-  activation_round: 3
+  activation_round: 5
   num_malicious_clients: 5
-  type: Label Flip
+  type: Sign Flip
 defence:
   activation_round: 1
 general:
