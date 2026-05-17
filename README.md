@@ -49,7 +49,7 @@ poetry run partition-dataset [OPTIONS]
 > **Note:** To set up heterogeneous distributions, use the `--type=heterogeneous` flag and set an `--alpha` value to control the skewness.
 
 ### 3. Run Pre-configured Experiments
-To execute the automated script for running experiments across multiple strategies and datasets under different attack configurations (Label-Flipping, Gaussian Noise, Sign Flip):
+To execute the automated script for running experiments across multiple strategies and datasets under different attack configurations (Label Flipping, Gaussian Noise, Sign Flip):
 
 ```sh
 sh run_experiments.sh 
