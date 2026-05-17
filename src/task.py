@@ -13,7 +13,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from yaml import safe_load
 
-from src.attacks import add_gaussian_noise, flip_labels, flip_sign
+from src.attacks import flip_sign
 from src.models import MODELS, ModelConfig
 from src.settings import settings
 
@@ -45,13 +45,6 @@ def train(
             images = images.to(device)
             labels = labels.to(device)
 
-            if attack_activated and client_type == "Malicious":
-                match settings.attack.type:
-                    case "Label Flip":
-                        try:
-                            labels = flip_labels(labels, model_config.num_classes)
-                        except KeyError:
-                            raise KeyError("'num_labels_flipped' must be specified in config file.")
             optimizer.zero_grad()
             loss = criterion(model(images.to(device)), labels.to(device))
             loss.backward()
@@ -60,8 +53,6 @@ def train(
                 match settings.attack.type:
                     case "Sign Flip":
                         flip_sign(model.parameters())
-                    case "Gaussian Noise":
-                        add_gaussian_noise(model.parameters())
 
             optimizer.step()
 

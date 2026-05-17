@@ -103,8 +103,6 @@ class Attack(BaseModel):
     # For BackDoor attack
     poison_rate: float = 0.5
     # For gaussian noise attack
-    mean: float = 0.0
-    std: float = 1.0
 
     @field_validator("activation_round", "num_malicious_clients")
     def validate_positive(cls, value, info):
@@ -121,12 +119,12 @@ class Attack(BaseModel):
     @field_validator("type")
     def validate_attack_type(cls, value: str, info: ValidationInfo):
         """
-        Validate attack type is either Label Flip, Byzantine Attack or no attack at all (None).
+        Validate attack type is either Sign Flip or no attack at all (None).
         :param value: Field validator
         :param info: Instance of Attack type
         :return: Validated attack type or raises exception.
         """
-        attack_types = ["Label Flip", "Gaussian Noise", "Sign Flip"]
+        attack_types = ["Sign Flip"]
         if value not in attack_types + [None]:
             raise ValueError(f"Under attack configuration: {info.field_name} must be in {attack_types}. Got {value}")
         return value

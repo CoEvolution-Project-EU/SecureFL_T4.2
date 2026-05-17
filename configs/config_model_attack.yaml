@@ -15,9 +15,7 @@ model:
 attack:
   activation_round: 5
   num_malicious_clients: 5
-  type: Gaussian Noise
-  mean: 0.1
-  std: 0.1
+  type: Sign Flip
 defence:
   activation_round: 1
 general:
