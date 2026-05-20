@@ -48,15 +48,7 @@ poetry run partition-dataset [OPTIONS]
 
 > **Note:** To set up heterogeneous distributions, use the `--type=heterogeneous` flag and set an `--alpha` value to control the skewness.
 
-### 3. Run Pre-configured Experiments
-To execute the automated script for running experiments across multiple strategies and datasets under different attack configurations (Sign Flip):
-
-```sh
-sh run_experiments.sh 
-```
-The results of each experiment will be stored in timestamped directories within the `outputs` folder.
-
-### 4. Custom Simulation
+### 3. Custom Simulation
 If you wish to configure your own simulation, you can set the specific configuration YAML file (`config.yaml`), and run the simulation using Poetry:
 
 ```sh
