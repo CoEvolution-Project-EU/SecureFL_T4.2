@@ -57,11 +57,8 @@ sh run_experiments.sh
 The results of each experiment will be stored in timestamped directories within the `outputs` folder.
 
 ### 4. Custom Simulation
-If you wish to configure your own simulation, you can set a specific configuration YAML file as an environment variable and run the simulation using Poetry:
+If you wish to configure your own simulation, you can set the specific configuration YAML file (`config.yaml`), and run the simulation using Poetry:
 
 ```sh
-export config_file_name=config_no_attack
 poetry run simulation
 ```
-
-The `configs` directory contains predefined YAML configuration files designed for simulating various attacks, such as `config_data_attack` for data specific attacks and `config_model_attack` for model specific attacks. To apply a specific configuration, simply update the corresponding environment variable with the desired YAML file name.
