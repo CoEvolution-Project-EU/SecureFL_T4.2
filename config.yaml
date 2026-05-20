@@ -3,7 +3,7 @@ server:
   fraction_fit: 1.0
   fraction_eval: 1.0
   dataset_size: 1.0
-  num_rounds: 50
+  num_rounds: 2
   batch_size: 64
 client:
   num_clients: 10
@@ -12,6 +12,12 @@ client:
 model:
   name: MNIST
   learning_rate: 0.001
+attack:
+  activation_round: 2
+  num_malicious_clients: 5
+  type: Sign Flip
+defence:
+  activation_round: 1
 general:
   use_wandb: false
   random_seed: 42

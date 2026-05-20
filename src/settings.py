@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from pydantic import BaseModel, ValidationInfo, field_validator
@@ -234,5 +233,5 @@ class Config(BaseModel):
 
 PROJECT_NAME = "FedGreed FL Defense Project"
 FOLDER_DIR = Path(__file__).parent.parent
-config_file = FOLDER_DIR / f"configs/{os.getenv('config_file_name', 'config')}.yaml"
+config_file = FOLDER_DIR / "config.yaml"
 settings = Config(config_file)
