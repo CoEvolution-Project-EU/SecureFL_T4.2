@@ -9,13 +9,11 @@ This repository contains the implementation of the SecureFL federated learning f
 ```bash
 .
 ├── src/                # Core Flower code and model logic
-│   ├── strategies/     # Flower server strategies (FedGreed, Mean, Trimmed-Mean, Median, Krum, Multi-Krum) 
-├── configs/            # Configuration files for running and customizing experiments
+│   ├── strategies/     # Flower server strategies (FedGreed, Loss-based Clustering, Mean, Trimmed-Mean, Median, Krum, Multi-Krum) 
 ├── data/               # Preprocessed partitioned data for FL clients
 ├── scripts/            # Data partitioning, simulation and utility scripts
 ├── outputs/            # Timestamped outputs: logs, metrics, and best global model checkpoints per experiment
 ├── pyproject.toml      # Python project configuration and dependencies
-├── run_experiments.sh  # Automated Bash script for running the complete experimental suite
 └── README.md           # Project documentation and usage instructions
 ```
 
