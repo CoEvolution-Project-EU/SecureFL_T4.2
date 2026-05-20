@@ -52,3 +52,42 @@ If you wish to configure your own simulation, you can set the specific configura
 ```sh
 poetry run simulation
 ```
+
+### 4. Simulation Outputs
+At the end of a simulation, a new timestamped directory is created under the `outputs/` folder (e.g., `outputs/YYYY-MM-DD/HH-MM-SS/`). This directory contains the complete artifacts from that specific run, including:
+
+- `assessment_report.json`: A dynamic chronological assessment report detailing the model's resilience against attacks across runs.
+- `results.json`: Raw centralized and federated evaluation metrics (loss and accuracy) per round.
+- `config.yaml`: A snapshot of the configuration used for this simulation to ensure reproducibility.
+- `simulation.log`: The full log output of the Flower execution.
+- `*.pth`: PyTorch state dictionary checkpoints of the best performing global models found during training.
+
+#### Example: `assessment_report.json`
+The assessment report tracks multiple simulation executions over time. An example report for a "Sign Flip" attack on MNIST might look like this:
+
+```json
+{
+    "report_id": "REP-TOOL-005-{model_uuid}-{model_version}-2026-05-20T10:35:00Z-0001",
+    "report_type": "assessment_report",
+    "timestamp_utc": "2026-05-20T10:35:00Z",
+    "model_uuid": "",
+    "model_version": "",
+    "dataset": "MNIST",
+    "tool_id": "TOOL-005",
+    "has_defence": true,
+    "report": [
+        {
+            "attack_id": "ATK-002",
+            "defence_id": [
+                "DEF-001"
+            ],
+            "attack_execution_id": "ATK-002-RUN-0001",
+            "category": "unsafe_output",
+            "confidence": "medium",
+            "occurrence": "systematic",
+            "severity": "high",
+            "general_info": ""
+        }
+    ]
+}
+```
