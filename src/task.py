@@ -349,6 +349,16 @@ def generate_assessment_report() -> None:
     # 7. Dynamically assemble report items list from matching_runs
     report_items = []
     for index, rd in enumerate(matching_runs, start=1):
+        # Load results for 'rd' to populate general_info
+        general_info_data = ""
+        rd_results_path = rd / "results.json"
+        if rd_results_path.exists():
+            try:
+                with open(rd_results_path) as rf:
+                    general_info_data = json.load(rf)
+            except Exception:
+                pass
+
         if rd == current_run_save_path:
             # Current run: Build item using current config settings
             item = {
@@ -359,7 +369,7 @@ def generate_assessment_report() -> None:
                 "confidence": "medium",
                 "occurrence": "systematic",
                 "severity": severity,
-                "general_info": "",
+                "general_info": general_info_data,
             }
         else:
             # Historic run: Try to load its saved item from its assessment_report.json
@@ -381,6 +391,7 @@ def generate_assessment_report() -> None:
                     pass
 
             if loaded_item is not None:
+                loaded_item["general_info"] = general_info_data
                 item = loaded_item
             else:
                 # Fallback if no report exists or loading failed
@@ -393,7 +404,7 @@ def generate_assessment_report() -> None:
                     "confidence": "medium",
                     "occurrence": "systematic",
                     "severity": run_severity,
-                    "general_info": "",
+                    "general_info": general_info_data,
                 }
         report_items.append(item)
 

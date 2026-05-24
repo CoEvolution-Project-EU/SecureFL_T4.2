@@ -1,6 +1,3 @@
-import torch
-
-
 def flip_sign(parameters):
     """
     Flips sign of gradient for model parameters.
