@@ -8,6 +8,10 @@ This repository contains the implementation of the SecureFL federated learning f
 
 ```bash
 .
+├── avisence_datasets/  # Custom dataloaders for SemanticPOSS and SemanticKITTI
+├── common/             # Utilities and base classes for 3D point cloud parsing
+├── config/             # YAML configurations for network architectures and labels
+├── modules/            # Specialized AVISENCE models, losses, and custom trainers
 ├── src/                # Core Flower code and model logic
 │   ├── strategies/     # Flower server strategies (FedGreed, Loss-based Clustering, Mean, Trimmed-Mean, Median, Krum, Multi-Krum) 
 ├── data/               # Preprocessed partitioned data for FL clients
