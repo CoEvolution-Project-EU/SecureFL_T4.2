@@ -41,10 +41,10 @@ poetry run partition-dataset [OPTIONS]
 #### Available Arguments
 - `dataset_name` (Required): Name of the dataset (e.g., CIFAR10, FMNIST, MNIST).
 - `--num_clients` (Optional): Number of federated learning (FL) clients.
-- `--type` (Optional): Partitioning type, either `homogeneous` or `heterogeneous`. Default is `homogeneous`.
+- `--type` (Optional): Partitioning type, either `iid` or `non-iid`. Default is `iid`.
 - `--alpha` (Optional): Alpha parameter for the Dirichlet distribution.
 
-> **Note:** To set up heterogeneous distributions, use the `--type=heterogeneous` flag and set an `--alpha` value to control the skewness.
+> **Note:** To set up non-iid distributions, use the `--type=non-iid` flag and set an `--alpha` value to control the skewness.
 
 ### 3. Custom Simulation
 If you wish to configure your own simulation, you can set the specific configuration YAML file (`config.yaml`), and run the simulation using Poetry:

@@ -427,7 +427,7 @@ def generate_assessment_report() -> None:
         "model_version": model_version,
         "dataset": dataset_name,
         "tool_id": "TOOL-005",
-        "has_defence": True,
+        "has_defence": settings.server.strategy not in ["Mean", "Median", "Trimmed-Mean", "Trimmed Mean"],
         "report": report_items,
     }
 
