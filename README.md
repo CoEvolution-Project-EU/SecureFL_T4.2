@@ -54,7 +54,7 @@ poetry run simulation
 ```
 
 #### AVISENCE Use Case (3D Point Cloud Segmentation)
-SecureFL natively supports complex 3D point cloud training (such as the AVISENCE use case on the SemanticPOSS dataset). To enable this mode, add a `use_case` block to your `config.yaml`:
+SecureFL supports 3D point cloud training for the AVISENCE project. To use it, simply add the following block to your `config.yaml`:
 
 ```yaml
 use_case:
@@ -64,9 +64,9 @@ use_case:
   model_architecture_config_path: "config/arch/LENet_poss.yaml"
   data_dir: "./avisence_datasets/poss/dataset/SemanticPOSS"
 ```
-When `use_case` is configured, the framework dynamically bypasses standard image classification logic, routing data loading and model evaluation through the specialized 3D network architectures (e.g. `ResNet_34`) and custom evaluation metrics (e.g. `iouEval`).
+Adding this block automatically configures the framework to load 3D data and run the proper 3D network model for the SemanticPOSS dataset.
 
-> **Important Data Setup:** You must download the dataset sequence folder from [https://semantic-kitti.org/](https://semantic-kitti.org/) and place it directly inside the folder specified by your `data_dir` path (e.g., `./avisence_datasets/poss/dataset/SemanticPOSS/sequences/`).
+> **Important Data Setup:** You must download the dataset sequences from [here](http://www.poss.pku.edu.cn/OpenDataResource/SemanticPOSS/SemanticPOSS_dataset.zip) and place them directly inside your data directory (e.g., `./avisence_datasets/poss/dataset/SemanticPOSS/sequences/`).
 
 #### Configuring Attacks
 You can simulate Byzantine attacks within your federated learning network by modifying the `attack` section in `config.yaml`. The framework currently supports the following attacks:
