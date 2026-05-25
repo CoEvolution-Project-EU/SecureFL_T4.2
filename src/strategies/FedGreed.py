@@ -60,10 +60,20 @@ class FedGreed(FedAvg):
     def _init_wandb_project(self):
         if settings.attack.type is not None:
             match settings.attack.type:
+                case "Label Flip":
+                    name = (
+                        f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
+                        f"{settings.attack.type}"
+                    )
                 case "Sign Flip":
                     name = (
                         f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
                         f"{settings.attack.type}"
+                    )
+                case "Gaussian Noise":
+                    name = (
+                        f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
+                        f"{settings.attack.type}: mean={settings.attack.mean}, std={settings.attack.std}"
                     )
                 case _:
                     raise ValueError(f"Invalid attack type: {settings.attack.type}")

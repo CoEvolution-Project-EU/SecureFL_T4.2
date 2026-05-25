@@ -1,3 +1,4 @@
+import os
 import random
 import time
 import warnings
@@ -10,6 +11,7 @@ from src.server_app import get_server_fn
 from src.settings import settings
 from src.task import generate_assessment_report
 
+os.environ["RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO"] = "0"
 warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 

@@ -53,6 +53,12 @@ If you wish to configure your own simulation, you can set the specific configura
 poetry run simulation
 ```
 
+#### Configuring Attacks
+You can simulate Byzantine attacks within your federated learning network by modifying the `attack` section in `config.yaml`. The framework currently supports the following attacks:
+- **Sign Flip**: Malicious clients invert the sign of their model updates before sending them to the server.
+- **Label Flip**: Malicious clients flip the target labels of their local training dataset.
+- **Gaussian Noise**: Malicious clients introduce Gaussian noise (configured via `mean` and `std`) to their model weights.
+
 ### 4. Simulation Outputs
 At the end of a simulation, a new timestamped directory is created under the `outputs/` folder (e.g., `outputs/YYYY-MM-DD/HH-MM-SS/`). This directory contains the complete artifacts from that specific run, including:
 
@@ -66,10 +72,11 @@ At the end of a simulation, a new timestamped directory is created under the `ou
 The assessment report tracks multiple simulation executions over time. An example report for a "Sign Flip" attack on MNIST might look like this:
 
 ```json
+
 {
-    "report_id": "REP-TOOL-005-{model_uuid}-{model_version}-2026-05-20T10:35:00Z-0001",
+    "report_id": "REP-TOOL-005-{model_uuid}-{model_version}-2026-05-24T09:59:53Z-0010",
     "report_type": "assessment_report",
-    "timestamp_utc": "2026-05-20T10:35:00Z",
+    "timestamp_utc": "2026-05-24T09:59:53Z",
     "model_uuid": "",
     "model_version": "",
     "dataset": "MNIST",
@@ -86,7 +93,37 @@ The assessment report tracks multiple simulation executions over time. An exampl
             "confidence": "medium",
             "occurrence": "systematic",
             "severity": "high",
-            "general_info": ""
+            "general_info": {
+                "centralized_evaluate": [
+                    {
+                        "round": 0,
+                        "centralized_loss": 2.3145557072511904,
+                        "centralized_accuracy": 6.15
+                    },
+                    {
+                        "round": 1,
+                        "centralized_loss": 0.7125890412528044,
+                        "centralized_accuracy": 76.18
+                    },
+                    {
+                        "round": 2,
+                        "centralized_loss": 4563743.073248408,
+                        "centralized_accuracy": 9.74
+                    }
+                ],
+                "federated_evaluate": [
+                    {
+                        "round": 1,
+                        "federated_evaluate_loss": 0.9398310179419281,
+                        "federated_evaluate_accuracy": 67.27757414195268
+                    },
+                    {
+                        "round": 2,
+                        "federated_evaluate_loss": 4068974.184107491,
+                        "federated_evaluate_accuracy": 9.805064978340553
+                    }
+                ]
+            }
         }
     ]
 }
