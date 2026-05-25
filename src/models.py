@@ -12,6 +12,9 @@ from torchvision.transforms import (
     ToTensor,
 )
 
+from modules.network.LENet import BasicBlock, ResNet_34
+from src.settings import settings
+
 
 class Cifar_Net(nn.Module):
     """Simple CNN adapted from 'PyTorch: A 60 Minute Blitz'."""
@@ -65,8 +68,11 @@ class ModelConfig(BaseModel):
 
     model: nn.Module
     num_classes: int
-    eval_transforms: Compose
-    train_transforms: Compose
+    eval_transforms: Compose | None = None
+    train_transforms: Compose | None = None
+    criterion: nn.NLLLoss | None = None
+    lovasz: nn.Module | None = None
+    boundary_loss: nn.Module | None = None
 
 
 MODELS = {
@@ -124,6 +130,25 @@ MODELS = {
         ),
     ),
 }
+
+if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+    MODELS["ResNet"] = ModelConfig(
+        model=ResNet_34(
+            nclasses=len(settings.use_case.data_config["learning_map_inv"]),
+            params=settings.use_case.model_architecture_config,
+            block=BasicBlock,
+            layers=[3, 4, 6, 3],
+            if_BN=True,
+            zero_init_residual=False,
+            norm_layer=None,
+            groups=1,
+            width_per_group=64,
+        ),
+        num_classes=len(settings.use_case.data_config["learning_map_inv"]),
+        criterion=settings.use_case.criterion,
+        lovasz=settings.use_case.lovasz,
+        boundary_loss=settings.use_case.boundary_loss,
+    )
 
 
 def get_weights(model):

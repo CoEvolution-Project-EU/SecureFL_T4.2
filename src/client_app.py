@@ -4,7 +4,7 @@ from flwr.common import Context
 from src.flowerClient import FlowerClient
 from src.models import MODELS
 from src.settings import settings
-from src.task import load_data
+from src.task import load_data, split_dataset_into_clients
 
 
 # Construct a FlowerClient with its own data set partition.
@@ -19,6 +19,12 @@ def get_client_fn(malicious_ids: list[int]):
     :return: A ClientApp instance that constructs clients with specified configurations.
     """
     model_name = settings.model.name
+    if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+        model_name = "ResNet"
+
+    client_indices = None
+    if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+        client_indices = split_dataset_into_clients(settings.use_case.parser.train_dataset, settings.client.num_clients)
 
     def client_fn(context: Context) -> Client:
         # Load model and data
@@ -26,14 +32,22 @@ def get_client_fn(malicious_ids: list[int]):
             raise ValueError(f"Invalid model name: {model_name}")
         partition_id = context.node_config["partition-id"]
         num_partitions = context.node_config["num-partitions"]
-        train_loader, val_loader = load_data(model_name, partition_id, num_partitions)
+
+        train_loader, val_loader, client_indices_subset = None, None, None
+
+        if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+            client_indices_subset = client_indices[partition_id]
+        else:
+            train_loader, val_loader = load_data(model_name, partition_id, num_partitions)
+
         # Set client type
         if partition_id in malicious_ids:
             client_type = "Malicious"
         else:
             client_type = "Honest"
+
         client_instance = FlowerClient(
-            MODELS[model_name], client_type, partition_id, train_loader, val_loader
+            MODELS[model_name], client_type, partition_id, train_loader, val_loader, client_indices_subset
         ).to_client()
         return client_instance
 

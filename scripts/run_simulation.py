@@ -40,5 +40,5 @@ def simulate() -> None:
         generate_assessment_report()
 
     except Exception as e:
-        logger.error(f"Error in {settings.model.name} Federated Scenario, processing: {str(e)}")
+        logger.error(f"Error in Federated Learning Simulation, processing: {str(e)}")
         raise

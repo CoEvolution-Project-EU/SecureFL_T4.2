@@ -13,9 +13,9 @@ from loguru import logger
 from torchvision import datasets, transforms
 
 
-def homogeneous_partitioning(targets, num_clients):
+def iid_partitioning(targets, num_clients):
     """
-    Splits dataset homogeneously among clients, ensuring each client gets
+    Splits dataset into iid partitions among clients, ensuring each client gets
     an equal number of samples per label.
 
     :param targets: NumPy array of dataset labels
@@ -43,7 +43,7 @@ def homogeneous_partitioning(targets, num_clients):
     return client_partitions
 
 
-def heterogeneous_partitioning(targets: np.ndarray, num_clients: int, alpha: float):
+def non_iid_partitioning(targets: np.ndarray, num_clients: int, alpha: float):
     """
     Partition dataset indices among clients using a Dirichlet distribution to simulate non-IID label distribution.
 
@@ -166,7 +166,7 @@ def save_partition_heatmap(image_path, dataset, num_clients, num_classes, client
 @click.command()
 @click.argument("dataset_name", required=True)
 @click.option("--num_clients", help="Number of FL clients", default=10)
-@click.option("--type", help="Partitioning type: either homogeneous or heterogeneous", default="homogeneous")
+@click.option("--type", help="Partitioning type: either iid or non-iid", default="iid")
 @click.option("--alpha", help="Alpha parameter of Dirichlet distribution", default=1.0)
 def main(dataset_name: str, num_clients: int, type: str, alpha: float) -> None:
     logger.info(
@@ -193,12 +193,12 @@ def main(dataset_name: str, num_clients: int, type: str, alpha: float) -> None:
             raise ValueError(f"Invalid dataset name: {dataset_name}")
 
     match type:
-        case "homogeneous":
-            client_partitions = homogeneous_partitioning(np.array(train_dataset.targets), num_clients)
-        case "heterogeneous":
-            client_partitions = heterogeneous_partitioning(np.array(train_dataset.targets), num_clients, alpha)
+        case "iid":
+            client_partitions = iid_partitioning(np.array(train_dataset.targets), num_clients)
+        case "non-iid":
+            client_partitions = non_iid_partitioning(np.array(train_dataset.targets), num_clients, alpha)
         case _:
-            raise ValueError(f"Invalid partitioning type: {type}. Can be either 'homogeneous' or 'heterogeneous'.")
+            raise ValueError(f"Invalid partitioning type: {type}. Can be either 'iid' or 'non-iid'.")
     logger.info("Partitioning finished successfully.")
 
     # Store server data locally

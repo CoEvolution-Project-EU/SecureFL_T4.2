@@ -2,7 +2,7 @@ import json
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Tuple
+from typing import Any, Tuple
 
 import numpy as np
 import torch
@@ -11,9 +11,11 @@ from loguru import logger
 from PIL import Image
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+from tqdm import tqdm
 from yaml import safe_load
 
-from src.attacks import add_gaussian_noise, flip_labels, flip_sign
+from modules.utils import AverageMeter
+from src.attacks import add_gaussian_noise, flip_labels, flip_sign, semantic_label_flip
 from src.models import MODELS, ModelConfig
 from src.settings import settings
 
@@ -25,16 +27,14 @@ def train(
     lr: float,
     model_config: ModelConfig,
     attack_activated: bool,
+    partition_id: int = 0,
 ) -> None:
     """
     Train the model on the training set.
-    :param model: Model for training.
-    :param train_loader: DataLoader for training.
-    :param client_type: Type of client
-    :param lr: Learning rate.
-    :param model_config: Model configuration.
-    :param attack_activated: Defines if attack is activated.
     """
+    if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+        return _train_avisence(model, train_loader, client_type, lr, model_config, attack_activated, partition_id)
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)  # move model to GPU if available
     model.train()
@@ -67,13 +67,111 @@ def train(
                 flip_sign(model.parameters())
 
 
-def test(model: nn.Module, test_loader: DataLoader) -> Tuple[float, float]:
+def _train_avisence(
+    model,
+    train_loader,
+    client_type: str,
+    lr: float,
+    model_config: ModelConfig,
+    attack_activated: bool,
+    partition_id: int,
+) -> None:
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    model.train()
+
+    criterion = settings.use_case.criterion
+    lovasz = settings.use_case.lovasz
+    boundary_loss = settings.use_case.boundary_loss
+    optimizer = torch.optim.Adam(
+        model.parameters(), lr=settings.use_case.model_architecture_config["train"]["consine"]["max_lr"]
+    )
+    use_aux_loss = settings.use_case.model_architecture_config["train"]["aux_loss"]["use"]
+    lamda = settings.use_case.model_architecture_config["train"]["aux_loss"]["lamda"]
+
+    for epoch in range(settings.client.local_epochs):
+        losses = AverageMeter()
+        pbar = tqdm(
+            train_loader, desc=f"Client {partition_id} - Epoch {epoch + 1}/{settings.client.local_epochs}", ncols=100
+        )
+        for batch_idx, (in_vol, proj_labels, _, _, _, _, _, _, _, _, _) in enumerate(pbar):
+            in_vol = in_vol.to(device)
+            proj_labels = proj_labels.to(device).long()
+
+            if settings.use_case.data_split == "non-iid":
+                label_category = (partition_id % 3) + 1
+                match label_category:
+                    case 1:
+                        mask_vehicle = torch.isin(proj_labels, torch.tensor([2, 3, 4, 5], device=device))
+                        proj_labels *= mask_vehicle
+                    case 2:
+                        mask_human = torch.isin(proj_labels, torch.tensor([6, 7, 8], device=device))
+                        proj_labels *= mask_human
+                    case 3:
+                        mask_structure = torch.isin(proj_labels, torch.tensor([9, 10, 11, 12, 13], device=device))
+                        proj_labels *= mask_structure
+
+            if attack_activated and client_type == "Malicious":
+                match settings.attack.type:
+                    case "Label Flip":
+                        proj_labels = semantic_label_flip(proj_labels, partition_id, device, model_config.num_classes)
+
+            output_tensor = torch.zeros_like(in_vol)
+            low_res_index = torch.arange(0, 40, 4)
+            output_tensor[:, :, low_res_index, :] = in_vol[:, :, ::4, :].clone()
+
+            if use_aux_loss:
+                output, z2, z4, z8 = model(output_tensor)
+                bd_loss = (
+                    boundary_loss(output, proj_labels)
+                    + lamda[0] * boundary_loss(z2, proj_labels)
+                    + lamda[1] * boundary_loss(z4, proj_labels)
+                    + lamda[2] * boundary_loss(z8, proj_labels)
+                )
+                loss_m0 = criterion(torch.log(output.clamp(min=1e-8)).double(), proj_labels).float() + 1.5 * lovasz(
+                    output, proj_labels
+                )
+                loss_m2 = criterion(torch.log(z2.clamp(min=1e-8)).double(), proj_labels).float() + 1.5 * lovasz(
+                    z2, proj_labels
+                )
+                loss_m4 = criterion(torch.log(z4.clamp(min=1e-8)).double(), proj_labels).float() + 1.5 * lovasz(
+                    z4, proj_labels
+                )
+                loss_m8 = criterion(torch.log(z8.clamp(min=1e-8)).double(), proj_labels).float() + 1.5 * lovasz(
+                    z8, proj_labels
+                )
+                loss = loss_m0 + lamda[0] * loss_m2 + lamda[1] * loss_m4 + lamda[2] * loss_m8 + bd_loss
+            else:
+                output, _ = model(output_tensor)
+                bd_loss = boundary_loss(output, proj_labels)
+                loss = (
+                    criterion(torch.log(output.clamp(min=1e-8)).double(), proj_labels).float()
+                    + lovasz(output, proj_labels)
+                    + bd_loss
+                )
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), max_norm=1, norm_type=2)
+
+            if attack_activated and client_type == "Malicious":
+                match settings.attack.type:
+                    case "Sign Flip":
+                        flip_sign(model.parameters())
+                    case "Gaussian Noise":
+                        add_gaussian_noise(model.parameters())
+            optimizer.step()
+            losses.update(loss.item(), in_vol.size(0))
+            pbar.set_postfix({"loss": f"{losses.avg:.4f}"})
+
+
+def test(model: nn.Module, test_loader: DataLoader, evaluator: Any = None, call_desc: str = "") -> Tuple[Any, ...]:
     """
     Validate the model on the test set.
-    :param model: Model for evaluation.
-    :param test_loader: DataLoader for test set.
-    :return: Testing loss, accuracy.
     """
+    if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+        return _test_avisence(model, test_loader, evaluator, call_desc)
+
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.eval()
@@ -97,6 +195,44 @@ def test(model: nn.Module, test_loader: DataLoader) -> Tuple[float, float]:
     accuracy = correct / len(test_loader.dataset) * 100
     loss = loss / len(test_loader)
     return loss, accuracy
+
+
+def _test_avisence(model: nn.Module, test_loader: DataLoader, evaluator: Any, call: str) -> tuple[Any, Any, Any]:
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+    model.eval()
+    evaluator.reset()
+    criterion = settings.use_case.criterion
+    lovasz = settings.use_case.lovasz
+    losses = AverageMeter()
+    use_aux_loss = settings.use_case.model_architecture_config["train"]["aux_loss"]["use"]
+
+    with torch.no_grad():
+        pbar = tqdm(test_loader, desc=call, ncols=100)
+        for in_vol, proj_labels, _, _, _, _, _, _, _, _, _ in pbar:
+            in_vol = in_vol.to(device)
+            proj_labels = proj_labels.to(device).long()
+            output_tensor = torch.zeros_like(in_vol)
+            low_res_index = torch.arange(0, 40, 4)
+            output_tensor[:, :, low_res_index, :] = in_vol[:, :, ::4, :].clone()
+
+            if use_aux_loss:
+                output, _, _, _ = model(output_tensor)
+            else:
+                output, _ = model(output_tensor)
+
+            log_out = torch.log(output.clamp(min=1e-8))
+            wce = criterion(log_out.double(), proj_labels).float()
+            jacc = lovasz(output, proj_labels)
+            loss = wce + jacc
+
+            argmax = output.argmax(dim=1)
+            evaluator.addBatch(argmax, proj_labels)
+            losses.update(loss.mean().item(), in_vol.size(0))
+            pbar.set_postfix({"loss": f"{losses.avg:.4f}"})
+
+    accuracy = evaluator.getacc()
+    jaccard, class_jaccard = evaluator.getIoU()
+    return losses.avg, accuracy.item(), jaccard.item()
 
 
 def set_dataloader(model_config: ModelConfig, images: np.ndarray, labels: np.ndarray):
@@ -191,6 +327,23 @@ def load_data(model_name: str, partition_id: int, num_partitions: int) -> Tuple[
     test_dataloader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
     return train_dataloader, test_dataloader
+
+
+def split_dataset_into_clients(dataset, num_clients):
+    """Split dataset indices into N clients (IID split)"""
+    total_samples = len(dataset)
+    samples_per_client = total_samples // num_clients
+
+    indices = list(range(total_samples))
+    np.random.shuffle(indices)
+
+    client_indices = []
+    for i in range(num_clients):
+        start_idx = i * samples_per_client
+        end_idx = (i + 1) * samples_per_client if i < num_clients - 1 else total_samples
+        client_indices.append(indices[start_idx:end_idx])
+
+    return client_indices
 
 
 current_run_save_path = None

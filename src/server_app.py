@@ -1,8 +1,11 @@
 from typing import Dict
 
+import torch
 from flwr.common import Context, ndarrays_to_parameters
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
+from torch.utils.data import DataLoader, Subset
 
+from modules.utils import iouEval
 from src.models import MODELS, ModelConfig, get_weights, set_weights
 from src.settings import settings
 from src.strategies.bulyan_strategy import BulyanStrategy
@@ -18,21 +21,46 @@ from src.task import load_server_data, set_dataloader, test
 def gen_evaluate_fn(model_config: ModelConfig):
     """Generate the function for centralized evaluation."""
 
-    images, labels = load_server_data(settings.server.dataset_size)
-    if settings.server.strategy in ["FedGreed", "Loss-based Clustering"]:
-        images = images[len(images) // 2 :]
-        labels = labels[len(labels) // 2 :]
-    test_dataloader = set_dataloader(model_config, images, labels)
+    if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+        test_dataset = settings.use_case.parser.valid_dataset
+        match settings.server.strategy:
+            case "FedGreed" | "Loss-based Clustering":
+                indices = torch.arange(len(test_dataset))
+                split = int(0.5 * len(test_dataset))
+                test_dataloader = DataLoader(
+                    Subset(test_dataset, indices[:split]), batch_size=settings.client.batch_size, shuffle=True
+                )
+            case _:
+                test_dataloader = settings.use_case.parser.get_valid_set()
 
-    model = model_config.model
+        device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        model = model_config.model
+        model.to(device)
+        evaluator = iouEval(model_config.num_classes, device, ignore=0)
 
-    def evaluate(server_round, parameters_ndarrays, config):
-        """Evaluate global model on centralized test set."""
-        set_weights(model, parameters_ndarrays)
-        loss, accuracy = test(model, test_dataloader)
-        return loss, {"centralized_accuracy": accuracy}
+        def evaluate(server_round, parameters_ndarrays, config):
+            """Evaluate global model on centralized test set."""
+            set_weights(model, parameters_ndarrays)
+            loss, accuracy, jaccard = test(model, test_dataloader, evaluator=evaluator, call_desc="Server Evaluation")
+            return loss, {"centralized_accuracy": accuracy}
 
-    return evaluate
+        return evaluate
+    else:
+        images, labels = load_server_data(settings.server.dataset_size)
+        if settings.server.strategy in ["FedGreed", "Loss-based Clustering"]:
+            images = images[len(images) // 2 :]
+            labels = labels[len(labels) // 2 :]
+        test_dataloader = set_dataloader(model_config, images, labels)
+
+        model = model_config.model
+
+        def evaluate(server_round, parameters_ndarrays, config):
+            """Evaluate global model on centralized test set."""
+            set_weights(model, parameters_ndarrays)
+            loss, accuracy = test(model, test_dataloader)
+            return loss, {"centralized_accuracy": accuracy}
+
+        return evaluate
 
 
 def on_fit_config(server_round: int):
@@ -68,6 +96,9 @@ def get_server_fn():
     def server_fn(context: Context):
         # Read from config
         model_name = settings.model.name
+        if settings.use_case is not None and settings.use_case.name == "AVISENCE":
+            model_name = "ResNet"
+
         if model_name not in MODELS:
             raise ValueError(f"Invalid model name: {model_name}")
         model_config = MODELS[model_name]

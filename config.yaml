@@ -27,3 +27,10 @@ backend:
   client_resources:
     num_cpus: 2.0
     num_gpus: 0.0
+
+use_case:
+  name: "AVISENCE"
+  data_split: "iid" # non-iid or iid
+  data_config_path: "config/labels/semantic-poss.yaml"
+  model_architecture_config_path: "config/arch/LENet_poss.yaml"
+  data_dir: "./avisence_datasets/poss/dataset/SemanticPOSS"

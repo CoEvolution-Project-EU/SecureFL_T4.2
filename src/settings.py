@@ -1,7 +1,20 @@
 from pathlib import Path
+from typing import Literal, Optional
 
-from pydantic import BaseModel, ValidationInfo, field_validator
+import torch
+import torch.nn as nn
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from yaml import safe_load
+
+from avisence_datasets.poss.parser import Parser
+from modules.loss.boundary_loss import BoundaryLoss
+from modules.loss.Lovasz_Softmax import Lovasz_softmax
 
 
 class Server(BaseModel):
@@ -168,6 +181,85 @@ class Backend(BaseModel):
     client_resources: dict[str, float]
 
 
+class UseCase(BaseModel):
+    name: str
+    data_split: Literal["non-iid", "iid"] = "iid"
+    data_config_path: str
+    model_architecture_config_path: str
+    data_dir: str
+
+    data_config: Optional[dict] = None
+    model_architecture_config: Optional[dict] = None
+    parser: Optional["Parser"] = None
+
+    criterion: Optional[nn.NLLLoss] = None
+    lovasz: Optional[nn.Module] = None
+    boundary_loss: Optional[nn.Module] = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    @model_validator(mode="after")
+    def init_configs(self):
+        """Load configs after UseCase is constructed"""
+        if self.name == "AVISENCE":
+            # Load YAML configs
+            with open(self.model_architecture_config_path) as f:
+                self.model_architecture_config = safe_load(f)
+            with open(self.data_config_path) as f:
+                self.data_config = safe_load(f)
+        else:
+            raise ValueError(f"Unknown use case: {self.name}")
+        return self
+
+    def init_parser(self, local_batch_size: int):
+        match self.name:
+            case "AVISENCE":
+                self.parser = Parser(
+                    root=self.data_dir,
+                    train_sequences=self.data_config["split"]["train"],
+                    valid_sequences=self.data_config["split"]["valid"],
+                    test_sequences=self.data_config["split"]["test"],
+                    labels=self.data_config["labels"],
+                    color_map=self.data_config["color_map"],
+                    learning_map=self.data_config["learning_map"],
+                    learning_map_inv=self.data_config["learning_map_inv"],
+                    sensor=self.model_architecture_config["dataset"]["sensor"],
+                    max_points=self.model_architecture_config["dataset"]["max_points"],
+                    batch_size=local_batch_size,
+                    workers=0,
+                    gt=True,
+                    shuffle_train=True,
+                )
+            case _:
+                raise ValueError(f"Unknown use case: {self.name}")
+
+    def init_loss_functions(self, device):
+        match self.name:
+            case "AVISENCE":
+                """Setup loss functions"""
+                # Calculate class weights from dataset
+                epsilon_w = self.model_architecture_config["train"]["epsilon_w"]
+                content = torch.zeros(len(self.data_config["learning_map_inv"]), dtype=torch.float)
+
+                # Map content from original classes to learning classes
+                for cl, freq in self.data_config["content"].items():
+                    x_cl = int(cl)
+                    # Map original class to learning class
+                    if x_cl in self.data_config["learning_map"]:
+                        mapped_cl = self.data_config["learning_map"][x_cl]
+                        content[mapped_cl] += freq
+
+                loss_w = 1 / (content + epsilon_w)
+                loss_w[0] = 0  # Ignore unlabeled class
+
+                # Loss functions - convert weights to double to match the log output type
+                self.criterion = nn.NLLLoss(weight=loss_w.double()).to(device)
+                self.lovasz = Lovasz_softmax(ignore=0).to(device)
+                self.boundary_loss = BoundaryLoss().to(device)
+            case _:
+                raise ValueError(f"Unknown use case: {self.name}")
+
+
 class Config(BaseModel):
     server: Server
     client: Client
@@ -176,7 +268,10 @@ class Config(BaseModel):
     defence: Defence
     general: General
     backend: Backend
+    use_case: Optional[UseCase] = None
     config_path: Path
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     def __init__(self, config_path: Path) -> None:
         if config_path.is_file():
@@ -190,6 +285,20 @@ class Config(BaseModel):
             super().__init__(**config)
         else:
             raise FileNotFoundError("Error: yaml config file not found.")
+
+    @model_validator(mode="after")
+    def init_use_case_parser(self):
+        if self.use_case is not None:
+            self.use_case.init_parser(local_batch_size=self.client.batch_size)
+        return self
+
+    @model_validator(mode="after")
+    def init_use_case_loss_functions(self):
+        if self.use_case is not None:
+            # We don't have general.device in settings.py yet, we can default to cuda if available
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.use_case.init_loss_functions(device=device)
+        return self
 
     @field_validator("attack")
     def validate_malicious_users(cls, value: Attack, info: ValidationInfo):

@@ -41,10 +41,10 @@ poetry run partition-dataset [OPTIONS]
 #### Available Arguments
 - `dataset_name` (Required): Name of the dataset (e.g., CIFAR10, FMNIST, MNIST).
 - `--num_clients` (Optional): Number of federated learning (FL) clients.
-- `--type` (Optional): Partitioning type, either `homogeneous` or `heterogeneous`. Default is `homogeneous`.
+- `--type` (Optional): Partitioning type, either `iid` or `non-iid`. Default is `iid`.
 - `--alpha` (Optional): Alpha parameter for the Dirichlet distribution.
 
-> **Note:** To set up heterogeneous distributions, use the `--type=heterogeneous` flag and set an `--alpha` value to control the skewness.
+> **Note:** To set up non-iid distributions, use the `--type=non-iid` flag and set an `--alpha` value to control the skewness.
 
 ### 3. Custom Simulation
 If you wish to configure your own simulation, you can set the specific configuration YAML file (`config.yaml`), and run the simulation using Poetry:
@@ -52,6 +52,21 @@ If you wish to configure your own simulation, you can set the specific configura
 ```sh
 poetry run simulation
 ```
+
+#### AVISENCE Use Case (3D Point Cloud Segmentation)
+SecureFL natively supports complex 3D point cloud training (such as the AVISENCE use case on the SemanticPOSS dataset). To enable this mode, add a `use_case` block to your `config.yaml`:
+
+```yaml
+use_case:
+  name: "AVISENCE"
+  data_split: "iid" # non-iid or iid
+  data_config_path: "config/labels/semantic-poss.yaml"
+  model_architecture_config_path: "config/arch/LENet_poss.yaml"
+  data_dir: "./avisence_datasets/poss/dataset/SemanticPOSS"
+```
+When `use_case` is configured, the framework dynamically bypasses standard image classification logic, routing data loading and model evaluation through the specialized 3D network architectures (e.g. `ResNet_34`) and custom evaluation metrics (e.g. `iouEval`).
+
+> **Important Data Setup:** You must download the dataset sequence folder from [https://semantic-kitti.org/](https://semantic-kitti.org/) and place it directly inside the folder specified by your `data_dir` path (e.g., `./avisence_datasets/poss/dataset/SemanticPOSS/sequences/`).
 
 #### Configuring Attacks
 You can simulate Byzantine attacks within your federated learning network by modifying the `attack` section in `config.yaml`. The framework currently supports the following attacks:
