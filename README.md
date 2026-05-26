@@ -84,11 +84,11 @@ The assessment report tracks multiple simulation executions over time. An exampl
     "has_defence": true,
     "report": [
         {
-            "attack_id": "ATK-002",
+            "attack_id": "ATT-012",
             "defence_id": [
-                "DEF-001"
+                "DEF-005"
             ],
-            "attack_execution_id": "ATK-002-RUN-0001",
+            "attack_execution_id": "ATT-012-RUN-0001",
             "category": "unsafe_output",
             "confidence": "medium",
             "occurrence": "systematic",
