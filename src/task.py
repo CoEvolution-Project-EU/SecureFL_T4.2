@@ -372,9 +372,9 @@ def generate_assessment_report() -> None:
         if rd == current_run_save_path:
             # Current run: Build item using current config settings
             item = {
-                "attack_id": "ATK-002",
-                "defence_id": ["DEF-001"],
-                "attack_execution_id": f"ATK-002-RUN-{index:04d}",
+                "attack_id": "ATK-012",
+                "defence_id": ["DEF-005"],
+                "attack_execution_id": f"ATK-012-RUN-{index:04d}",
                 "category": "unsafe_output",
                 "confidence": "medium",
                 "occurrence": "systematic",
