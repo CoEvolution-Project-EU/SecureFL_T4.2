@@ -58,17 +58,12 @@ class KrumStrategy(Krum):
     def _init_wandb_project(self):
         if settings.attack.type is not None:
             match settings.attack.type:
-                case "Label Flip":
+                case "Label-Flip" | "Sign-Flip" | "IPM" | "ALIE" | "Minmax" | "MinSum" | "Mimic":
                     name = (
                         f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
                         f"{settings.attack.type}"
                     )
-                case "Sign Flip":
-                    name = (
-                        f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
-                        f"{settings.attack.type}"
-                    )
-                case "Gaussian Noise":
+                case "Gaussian":
                     name = (
                         f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
                         f"{settings.attack.type}: mean={settings.attack.mean}, std={settings.attack.std}"
@@ -112,7 +107,15 @@ class KrumStrategy(Krum):
             set_weights(model, parameters_to_ndarrays(parameters))
             # Save the PyTorch model
             file_name = f"model_state_acc_{accuracy}_round_{server_round}.pth"
-            torch.save(model.state_dict(), self.save_path / file_name)
+            if hasattr(self, "best_model_path") and self.best_model_path and self.best_model_path.exists():
+                import os
+
+                try:
+                    os.remove(self.best_model_path)
+                except Exception:
+                    pass
+            self.best_model_path = self.save_path / file_name
+            torch.save(model.state_dict(), self.best_model_path)
 
     def _store_results_and_log(self, server_round: int, tag: str, results_dict) -> None:
         """A helper method that stores results and logs them to W&B if enabled."""

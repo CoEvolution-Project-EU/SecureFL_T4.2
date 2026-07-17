@@ -74,9 +74,9 @@ class UserRefine(User):
         else:
             raise NotImplementedError
 
-        print(f"Mean Coarse inference time:{'%.8f'%np.mean(coarse)}\t std:{'%.8f'%np.std(coarse)}")
-        print(f"Mean Reproject inference time:{'%.8f'%np.mean(reproj)}\t std:{'%.8f'%np.std(reproj)}")
-        print(f"Mean Refine inference time:{'%.8f'%np.mean(refine)}\t std:{'%.8f'%np.std(refine)}")
+        print(f"Mean Coarse inference time:{'%.8f' % np.mean(coarse)}\t std:{'%.8f' % np.std(coarse)}")
+        print(f"Mean Reproject inference time:{'%.8f' % np.mean(reproj)}\t std:{'%.8f' % np.std(reproj)}")
+        print(f"Mean Refine inference time:{'%.8f' % np.mean(refine)}\t std:{'%.8f' % np.std(refine)}")
         print(f"Total Frames: {len(coarse)}")
         print("Finished Infering")
 

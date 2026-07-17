@@ -1,36 +1,119 @@
 server:
-  strategy: Mean # Options: [Mean, Median, Trimmed Mean, Bulyan, Multi-Krum, Krum, FedGreed, Loss-Based Clustering]
+  strategy: FedCluster
   fraction_fit: 1.0
-  fraction_eval: 1.0
+  fraction_eval: 0.0
   dataset_size: 1.0
-  num_rounds: 5
-  batch_size: 64
+  num_rounds: 30
+  batch_size: 8
 client:
-  num_clients: 10
-  batch_size: 64
-  local_epochs: 5
+  num_clients: 20
+  batch_size: 8
+  local_epochs: 3
+dataset:
+  name: AVISENCE
 model:
-  name: MNIST
-  learning_rate: 0.001
+  name: ResNet
+# Training Hyperparameters and Optimizer setup
+# Use this section as the single source of truth for learning rates, momentum, and weight decay.
+optimizer:
+  name: adam
+  lr: 0.002
+  momentum: 0.9
+  weight_decay: 0.0005
+  betas:
+  - 0.9
+  - 0.999
+  max_grad_norm: -1.0
+  nesterov: true
 attack:
   activation_round: 1
-  num_malicious_clients: 5
-  type: Sign Flip # Options: [Sign Flip, Label Flip, Gaussian Noise]
-  mean: 0.0 # Only applicable for Gaussian Noise attack
-  std: 1.0 # Only applicable for Gaussian Noise attack
+  num_malicious_clients: 10
+  type: Label-Flip
+  mean: 0.0
+  std: 1.0
+  dev_type: std
 defence:
   activation_round: 1
+  beta: 0.2
+  defence_dataset_percentage: 0.1
 general:
   use_wandb: false
   random_seed: 42
 backend:
   client_resources:
-    num_cpus: 2.0
-    num_gpus: 0.0
+    num_cpus: 4.0
+    num_gpus: 1.0
 
 use_case:
   name: "AVISENCE"
-  data_split: "iid" # non-iid or iid
+  data_split: "sensor" # [sensor, iid, non-iid, inverse-non-iid]
+  sensor_profiles:
+    standard: {}  # No masking — full dataset, used as the baseline reference client
+    blind_to_class:
+      # Firmware-level failure: the sensor is completely blind to entire categories
+      # of objects. Each client assigned to this profile is blinded to a different
+      # category, assigned in round-robin order.
+      blinded_categories:
+        - Structure # class IDs: [4,5,6,7,8,9,10,11] (trunk, plants, traffic sign, pole, trashcan, building, cone/stone, fence)
+        - Vehicle   # class IDs: [3, 12]             (car, bike)
+        - Human     # class IDs: [1, 2]              (person/2+person, rider)
+        - Ground    # class IDs: [13]                (ground)
+    directional:
+      base_fov_angle: 90.0      # degrees of visible FOV (out of 360)
+      angle_variance: 10.0
+      mounting_jitter: 20.0     # random shift of center in degrees (0=left edge, 180=back/center)
+    narrow_fov_up:
+      # Simulates a LiDAR tilted aggressively upward. Drops all points
+      # below a Z threshold, erasing ground-level classes (road, sidewalk, parking).
+      base_z_threshold: 1.5
+      z_variance: 0.5
   data_config_path: "config/labels/semantic-poss.yaml"
-  model_architecture_config_path: "config/arch/LENet_poss.yaml"
   data_dir: "./avisence_datasets/poss/dataset/SemanticPOSS"
+  # Model architecture and dataset-specific properties.
+  # Do not place training loop hyperparameters (like learning rates) here.
+  lenet_poss_config:
+    train:
+      loss_class_weight_smoothing: 0.001
+      aux_loss:
+        use: True
+        lamda: [0.5, 1.0, 1.0]
+      residual: False
+      n_input_scans: 2
+    post:
+      CRF:
+        use: False
+      KNN:
+        use: True
+        params:
+          knn: 7
+          search: 7
+          sigma: 1.0
+          cutoff: 2.0
+    dataset:
+      labels: "poss"
+      scans: "poss"
+      max_points: 72000
+      sensor:
+        name: "Pandora"
+        type: "spherical"
+        fov_up: 7
+        fov_down: -16
+        img_prop:
+          width: 1800
+          height: 40
+        img_means:
+          - 22.26779
+          - 0.51144063
+          - 1.5727469
+          - -0.6350901
+          - 13.875261
+        img_stds:
+          - 17.735949
+          - 17.422485
+          - 22.217215
+          - 1.6433295
+          - 14.0925865
+        n_input_scans: 2
+        residual: False
+        transform: False
+        use_normal: False

@@ -53,17 +53,12 @@ class MeanStrategy(FedAvg):
     def _init_wandb_project(self):
         if settings.attack.type is not None:
             match settings.attack.type:
-                case "Label Flip":
+                case "Label-Flip" | "Sign-Flip" | "IPM" | "ALIE" | "Minmax" | "MinSum" | "Mimic":
                     name = (
                         f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
                         f"{settings.attack.type}"
                     )
-                case "Sign Flip":
-                    name = (
-                        f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
-                        f"{settings.attack.type}"
-                    )
-                case "Gaussian Noise":
+                case "Gaussian":
                     name = (
                         f"{str(self.run_dir)}-{settings.model.name}-{settings.server.strategy}-"
                         f"{settings.attack.type}: mean={settings.attack.mean}, std={settings.attack.std}"
@@ -107,7 +102,15 @@ class MeanStrategy(FedAvg):
             set_weights(model, parameters_to_ndarrays(parameters))
             # Save the PyTorch model
             file_name = f"model_state_acc_{accuracy}_round_{server_round}.pth"
-            torch.save(model.state_dict(), self.save_path / file_name)
+            if hasattr(self, "best_model_path") and self.best_model_path and self.best_model_path.exists():
+                import os
+
+                try:
+                    os.remove(self.best_model_path)
+                except Exception:
+                    pass
+            self.best_model_path = self.save_path / file_name
+            torch.save(model.state_dict(), self.best_model_path)
 
     def _store_results_and_log(self, server_round: int, tag: str, results_dict) -> None:
         """A helper method that stores results and logs them to W&B if enabled."""
@@ -169,6 +172,25 @@ class MeanStrategy(FedAvg):
             return None, {}
 
         parameters_aggregated = ndarrays_to_parameters(aggregate_inplace(results))
+        
+        try:
+            from src.plot_utils import plot_metrics_scatter
+
+            # MeanStrategy doesn't reject clients, so all are "selected"
+            # It also doesn't evaluate loss per client like FedGreed, so we don't have true losses here.
+            # But to generate the plot, we can just use dummy losses or check if the client provided a loss.
+            # We'll extract magnitudes, and for loss we will just use a constant or loss from evaluation if available
+            losses_to_plot = [res.metrics.get("loss", 0.0) for _, res in results]
+            client_types = [res.metrics.get("client_type", "Unknown") for _, res in results]
+            parameters_list = [res.parameters for _, res in results]
+            selected_status = [True] * len(results)
+            
+            plot_metrics_scatter(
+                losses_to_plot, parameters_list, client_types, selected_status, self.save_path, server_round
+            )
+        except Exception as e:
+            log(WARNING, f"Metrics Plotting failed: {e}")
+
         # Aggregate custom metrics if aggregation fn was provided
         metrics_aggregated = {}
         if server_round == 1:  # Only log this warning once

@@ -156,8 +156,8 @@ class User:
         else:
             raise NotImplementedError
 
-        print(f"Mean CNN inference time:{'%.8f'%np.mean(cnn)}\t std:{'%.8f'%np.std(cnn)}")
-        print(f"Mean KNN inference time:{'%.8f'%np.mean(knn)}\t std:{'%.8f'%np.std(knn)}")
+        print(f"Mean CNN inference time:{'%.8f' % np.mean(cnn)}\t std:{'%.8f' % np.std(cnn)}")
+        print(f"Mean KNN inference time:{'%.8f' % np.mean(knn)}\t std:{'%.8f' % np.std(knn)}")
         print(f"Total Frames: {len(cnn)}")
         print("Finished Infering")
 

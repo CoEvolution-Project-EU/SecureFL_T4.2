@@ -2,6 +2,7 @@ import json
 import os
 import random
 import shutil
+import sys
 from collections import defaultdict
 
 import click
@@ -12,10 +13,24 @@ import seaborn as sns
 from loguru import logger
 from torchvision import datasets, transforms
 
+from src.datasets.HAR import get_har_dataset
+from src.datasets.Purchase import get_purchase_dataset
+
+
+def _global_value_error_handler(exc_type, exc_value, traceback):
+    if issubclass(exc_type, ValueError):
+        print("\n[Error]")
+        print(f"❌ {exc_value}\n")
+    else:
+        sys.__excepthook__(exc_type, exc_value, traceback)
+
+
+sys.excepthook = _global_value_error_handler
+
 
 def iid_partitioning(targets, num_clients):
     """
-    Splits dataset into iid partitions among clients, ensuring each client gets
+    Splits dataset homogeneously among clients, ensuring each client gets
     an equal number of samples per label.
 
     :param targets: NumPy array of dataset labels
@@ -92,9 +107,82 @@ def non_iid_partitioning(targets: np.ndarray, num_clients: int, alpha: float):
             client_partitions[client_id].extend(class_indices[start : start + count])
             start += count
 
+    # Edge case: Ensure no client is completely starved
+    # If a client has less than 2 data points, assign them 2 randomly selected points from a random donor
+    for client_id in range(num_clients):
+        if len(client_partitions[client_id]) < 2:
+            donor_candidates = [i for i, part in enumerate(client_partitions) if len(part) > 3]
+            if donor_candidates:
+                donor_id = random.choice(donor_candidates)
+                for _ in range(2):
+                    idx_to_transfer = random.randrange(len(client_partitions[donor_id]))
+                    data_point = client_partitions[donor_id].pop(idx_to_transfer)
+                    client_partitions[client_id].append(data_point)
+
     # Optionally shuffle the indices within each client partition
     for client_id in range(num_clients):
         random.shuffle(client_partitions[client_id])
+
+    return client_partitions
+
+
+def sort_and_partitioning(labels, num_client, class_per_usr):
+    num_samples = len(labels)
+    num_class = max(labels) + 1
+
+    if num_client * class_per_usr < num_class:
+        raise ValueError(
+            f"sort_part strictly requires total slot capacity "
+            f"(num_clients * numb_cls_usr = {num_client * class_per_usr}) "
+            f"to be >= total dataset classes ({num_class})! Increase your clients or numb_cls_usr."
+        )
+
+    def partition(data, n):
+        for i in range(0, len(data), n):
+            yield data[i : i + n]
+
+    inds_sorted = np.argsort(labels)
+    class_size = int(num_samples / num_class)
+    block_per_class = int(num_client * class_per_usr / num_class)
+    data_per_block = int(class_size / block_per_class)
+    excess = class_size - (data_per_block * block_per_class)
+
+    all_datas = [[] for _ in range(num_class)]
+    seperated = list(partition(inds_sorted, class_size))
+    client_partitions = [[] for _ in range(num_client)]
+    user_vec = np.repeat(class_per_usr, num_client)
+    available_workers = np.arange(num_client)
+
+    for i in range(num_class):
+        class_partition = list(partition(seperated[i], data_per_block))
+        if excess > 0:
+            excess_block = class_partition[-1]
+            class_partition.pop(-1)
+            for y, extra_data in enumerate(excess_block):
+                class_partition[y % data_per_block] = np.append(class_partition[y % data_per_block], [extra_data])
+        all_datas[i] = class_partition
+
+    for label in range(num_class):
+        remaining_label = num_class - label
+        if remaining_label <= class_per_usr:
+            selected_ = np.arange(num_client)[user_vec == remaining_label]
+            available_workers_ = []
+            for worker in available_workers:
+                if worker not in selected_:
+                    available_workers_.append(worker)
+            choise = block_per_class - len(selected_)
+            selected = np.random.choice(available_workers_, choise, replace=False)
+            selected = np.append(selected, selected_)
+        else:
+            selected = np.random.choice(available_workers, block_per_class, replace=False)
+
+        for client in selected:
+            block_id = random.randint(0, len(all_datas[label]) - 1)
+            block = all_datas[label][block_id]
+            all_datas[label].pop(block_id)
+            client_partitions[int(client)].extend(block.astype("int64").tolist())
+            user_vec[int(client)] -= 1
+        available_workers = np.arange(num_client)[user_vec > 0]
 
     return client_partitions
 
@@ -138,6 +226,10 @@ def save_client_data(cid, client_partitions, dataset, output_dir):
 
 
 def save_partition_heatmap(image_path, dataset, num_clients, num_classes, client_partitions):
+    if hasattr(dataset, "classes"):
+        label_names = [f"{dataset.classes[i]} ({i})" for i in range(num_classes)]
+    else:
+        label_names = [str(i) for i in range(num_classes)]
     targets = np.array(dataset.targets)
     target_counts_per_client = np.zeros((num_clients, num_classes), dtype=int)
     for client_id in range(num_clients):
@@ -147,32 +239,50 @@ def save_partition_heatmap(image_path, dataset, num_clients, num_classes, client
             target_counts_per_client[client_id, label] = count
 
     # Count label occurrences per partition
-    label_names = [dataset.classes[i] for i in range(num_classes)]
     label_counts = target_counts_per_client.tolist()
     # Convert label counts to a DataFrame
     df = pd.DataFrame(label_counts, columns=label_names)
+
+    # Dynamically scale figure dimensions based on the number of clients and classes to prevent squishing
+    fig_width = max(14, num_clients * 0.8)
+    fig_height = max(8, num_classes * 0.25)
+    plt.figure(figsize=(fig_width, fig_height))
+
+    # Disable annotations natively if there are too many elements (prevents dense black text squares)
+    show_annotations = num_classes <= 100
+
     # Plot heatmap
-    plt.figure(figsize=(12, 8))
-    sns.heatmap(df.T, annot=True, fmt="d", cmap="Blues", cbar_kws={"label": "Label Count"}, linewidths=0.5, square=True)
+    sns.heatmap(
+        df.T,
+        annot=show_annotations,
+        fmt="d",
+        cmap="Blues",
+        cbar_kws={"label": "Label Count"},
+        linewidths=0.5,
+        square=False,
+    )
     plt.title("Label Distribution per Partition")
     plt.xlabel("Partition ID")
     plt.ylabel("Labels")
-    plt.xticks(rotation=0)
-    plt.yticks(rotation=0)
+    plt.xticks(rotation=45, fontsize=max(6, 12 - (num_clients // 20)))
+    plt.yticks(rotation=0, fontsize=max(5, 11 - (num_classes // 25)))
+    plt.tight_layout()
     plt.savefig(image_path)
+    plt.close()
     logger.info(f"Heatmap plot of partitioned distribution saved successfully under {image_path}")
 
 
 @click.command()
 @click.argument("dataset_name", required=True)
 @click.option("--num_clients", help="Number of FL clients", default=10)
-@click.option("--type", help="Partitioning type: either iid or non-iid", default="iid")
+@click.option("--type", help="Partitioning type: iid, non-iid, or sort_part", default="iid")
 @click.option("--alpha", help="Alpha parameter of Dirichlet distribution", default=1.0)
-def main(dataset_name: str, num_clients: int, type: str, alpha: float) -> None:
-    logger.info(
-        f"Start {type} partitioning {dataset_name} into {num_clients} clients "
-        f"with Dirichlet distribution (alpha = {alpha})"
-    )
+@click.option("--seed", help="Random seed", default=42, type=int)
+@click.option("--numb_cls_usr", help="Number of classes per user for sort_part", default=2)
+def main(dataset_name: str, num_clients: int, type: str, alpha: float, seed: int, numb_cls_usr: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    logger.info(f"Start {type} partitioning {dataset_name} into {num_clients} clients")
 
     # Download the dataset
     transform = transforms.Compose([transforms.ToTensor()])
@@ -189,16 +299,42 @@ def main(dataset_name: str, num_clients: int, type: str, alpha: float) -> None:
             train_dataset = datasets.FashionMNIST(root="./datasets", train=True, download=True, transform=transform)
             test_dataset = datasets.FashionMNIST(root="./datasets", train=False, download=True, transform=transform)
             num_classes = 10
+        case "CIFAR100":
+            train_dataset = datasets.CIFAR100(root="./datasets", train=True, download=True, transform=transform)
+            test_dataset = datasets.CIFAR100(root="./datasets", train=False, download=True, transform=transform)
+            num_classes = 100
+        case "SVHN":
+            train_dataset = datasets.SVHN(root="./datasets", split="train", download=True, transform=transform)
+            test_dataset = datasets.SVHN(root="./datasets", split="test", download=True, transform=transform)
+            train_dataset.targets = train_dataset.labels
+            test_dataset.targets = test_dataset.labels
+            num_classes = 10
+        case "HAR":
+            train_dataset, test_dataset = get_har_dataset(root="./datasets", download=True)
+            train_dataset.data = train_dataset.data.numpy()
+            train_dataset.targets = train_dataset.targets.numpy()
+            test_dataset.data = test_dataset.data.numpy()
+            test_dataset.targets = test_dataset.targets.numpy()
+            num_classes = 6
+        case "Purchase":
+            train_dataset, test_dataset = get_purchase_dataset(root="./datasets", download=True)
+            train_dataset.data = train_dataset.data.numpy()
+            train_dataset.targets = train_dataset.targets.numpy()
+            test_dataset.data = test_dataset.data.numpy()
+            test_dataset.targets = test_dataset.targets.numpy()
+            num_classes = 100
         case _:
             raise ValueError(f"Invalid dataset name: {dataset_name}")
 
     match type:
-        case "iid":
+        case "iid" | "homogeneous":
             client_partitions = iid_partitioning(np.array(train_dataset.targets), num_clients)
-        case "non-iid":
+        case "non-iid" | "non_iid" | "heterogeneous":
             client_partitions = non_iid_partitioning(np.array(train_dataset.targets), num_clients, alpha)
+        case "sort_part":
+            client_partitions = sort_and_partitioning(np.array(train_dataset.targets), num_clients, numb_cls_usr)
         case _:
-            raise ValueError(f"Invalid partitioning type: {type}. Can be either 'iid' or 'non-iid'.")
+            raise ValueError(f"Invalid partitioning type: {type}. Pick 'iid', 'non-iid', or 'sort_part'.")
     logger.info("Partitioning finished successfully.")
 
     # Store server data locally
@@ -206,7 +342,18 @@ def main(dataset_name: str, num_clients: int, type: str, alpha: float) -> None:
     clear_directory(output_dir)
     save_server_data(test_dataset, f"data/server/{dataset_name}")
     # Store client data locally
-    output_dir = f"data/client/{dataset_name}/num_clients_{num_clients}"
+    if type == "iid":
+        output_dir = f"data/client/{dataset_name}/iid/seed_{seed}/num_clients_{num_clients}"
+    elif type == "non_iid":
+        output_dir = f"data/client/{dataset_name}/non_iid/alpha_{alpha}/seed_{seed}/num_clients_{num_clients}"
+    elif type == "sort_part":
+        output_dir = f"data/client/{dataset_name}/sort_part/seed_{seed}/num_clients_{num_clients}"
+    else:
+        raise ValueError(
+            f"Invalid partition_type: '{type}'. "
+            f"This is your fault! Please use exactly 'iid', 'non_iid', or 'sort_part'."
+        )
+
     clear_directory(output_dir)
     for client_id in range(num_clients):
         save_client_data(client_id, client_partitions, train_dataset, output_dir)

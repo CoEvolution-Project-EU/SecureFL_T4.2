@@ -488,14 +488,14 @@ class SemanticKitti(Dataset):
                 # More elegant implementation
                 if self.use_residual:
                     for i in range(self.n_input_scans):
-                        tmp_residuals = eval(f"self.residual_files_{i+1}['{seq}']")
+                        tmp_residuals = eval(f"self.residual_files_{i + 1}['{seq}']")
                         tmp_pending_list = eval(f"pending_dict['{seq}']")
                         [path for path in tmp_residuals if os.path.split(path)[-1][:-4] in tmp_pending_list]
-                        exec(f"self.residual_files_{i+1}['{seq}'] = tmp_usefuls")
-                        new_len = len(eval(f"self.residual_files_{i+1}['{seq}']"))
-                        print(f"  Drop residual_images_{i+1} in seq{seq}: {len(tmp_residuals)} -> {new_len}")
+                        exec(f"self.residual_files_{i + 1}['{seq}'] = tmp_usefuls")
+                        new_len = len(eval(f"self.residual_files_{i + 1}['{seq}']"))
+                        print(f"  Drop residual_images_{i + 1} in seq{seq}: {len(tmp_residuals)} -> {new_len}")
                         if i >= 2:
-                            s1 = f"self.residual_files_{i-1}['{seq}']"
+                            s1 = f"self.residual_files_{i - 1}['{seq}']"
                             s2 = f"self.residual_files_{i}['{seq}']"
                             exec(f"assert len({s1}) == len({s2})")
 
