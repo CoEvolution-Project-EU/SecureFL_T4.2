@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from yaml import safe_load
 
-from src.attacks import add_gaussian_noise, semantic_label_flip
+from src.attacks import add_gaussian_noise, semantic_label_flip, flip_sign
 from src.models import ModelConfig
 from src.settings import settings
 
@@ -241,7 +241,7 @@ def train(
 
             if attack_activated and client_type == "Malicious":
                 match settings.attack.type:
-                    case "Label-Flip":
+                    case "Semantic-Label-Flip":
                         proj_labels = semantic_label_flip(proj_labels, partition_id, device, model_config.num_classes)
 
             # Subsample the input volume to create a sparse lower-resolution tensor
@@ -297,16 +297,9 @@ def train(
     if attack_activated and client_type == "Malicious":
         match settings.attack.type:
             case "Gaussian":
-                from src.attacks import add_gaussian_noise
                 add_gaussian_noise(model.parameters())
             case "Sign-Flip":
-                # Scaled Sign-Flip: Multiply the update by a large negative factor
-                # so that the malicious clients actively destroy the model,
-                # rather than just perfectly balancing out the honest clients.
-                scale_factor = -1.0
-                for param, orig_param in zip(model.parameters(), original_weights):
-                    update = param.data - orig_param
-                    param.data = orig_param + (scale_factor * update)
+                flip_sign(model.parameters(), original_weights, scale_factor=-0.5)
 
 
 def test(model: nn.Module, test_loader: DataLoader, evaluator: Any = None, call_desc: str = "") -> Tuple[Any, ...]:
@@ -347,13 +340,18 @@ def test(model: nn.Module, test_loader: DataLoader, evaluator: Any = None, call_
             losses.update(loss.mean().item(), in_vol.size(0))
             pbar.set_postfix({"loss": f"{losses.avg:.4f}"})
 
+    import math
+    final_loss = losses.avg
+    if math.isnan(final_loss) or math.isinf(final_loss):
+        final_loss = 1e6  # Large penalty for completely shattered models (e.g., pure Gaussian noise)
+
     if evaluator is not None:
         accuracy = evaluator.getacc()
         jaccard, class_jaccard = evaluator.getIoU()
-        return losses.avg, accuracy.item(), jaccard.item()
+        return final_loss, accuracy.item(), jaccard.item()
     else:
         # Return 2 values so that `loss, _ = test(...)` in strategies unpacks correctly
-        return losses.avg, 0.0
+        return final_loss, 0.0
 
 
 def split_dataset_into_clients(dataset, num_clients):
@@ -370,7 +368,7 @@ def split_dataset_into_clients(dataset, num_clients):
         total_samples = len(dataset)
         samples_per_client = total_samples // num_clients
         indices = list(range(total_samples))
-        np.random.shuffle(indices)
+        np.random.RandomState(settings.general.random_seed).shuffle(indices)
         client_indices = []
         for i in range(num_clients):
             start_idx = i * samples_per_client
@@ -412,7 +410,8 @@ def split_dataset_into_clients(dataset, num_clients):
             continue
             
         indices = sequence_to_indices[seq]
-        np.random.shuffle(indices)
+        # Use a fixed random seed for strictly deterministic distributions across runs
+        np.random.RandomState(settings.general.random_seed).shuffle(indices)
         
         num_clients_for_seq = len(clients_for_seq)
         samples_per_client = len(indices) // num_clients_for_seq

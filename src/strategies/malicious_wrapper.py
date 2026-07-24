@@ -1,3 +1,4 @@
+from logging import INFO
 from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
@@ -9,19 +10,17 @@ from flwr.common import (
     ndarrays_to_parameters,
     parameters_to_ndarrays,
 )
+from flwr.common.logger import log
 from flwr.server.client_proxy import ClientProxy
 from flwr.server.strategy import Strategy
 
 from src.attacks import (
-    MimicAttack,
     alie_attack,
     ipm_attack,
-    minmax_attack,
-    minsum_attack,
 )
 from src.settings import settings
 
-omniscient_types = ["ALIE", "IPM", "Minmax", "MinSum", "Mimic"]
+omniscient_types = ["ALIE", "IPM"]
 
 
 class AttackWrapperStrategy(Strategy):
@@ -82,57 +81,28 @@ class AttackWrapperStrategy(Strategy):
             else:
                 benign_results.append((client, fit_res))
 
-        print(f"Benign results: {len(benign_results)}")
-        print(f"Malicious results: {len(malicious_results)}")
-        # # If no benign results exist (fully compromised?), fall back
-        # if len(benign_results) == 0 or len(malicious_results) == 0:
-        #     return self.base_strategy.aggregate_fit(server_round, results, failures)
+        log(INFO, "Benign results: %d", len(benign_results))
+        log(INFO, "Malicious results: %d", len(malicious_results))
+        # If no benign results exist (fully compromised?), fall back
+        if len(benign_results) == 0 or len(malicious_results) == 0:
+            return self.base_strategy.aggregate_fit(server_round, results, failures)
 
         # 2. Decode benign weights
         benign_weights_list = [parameters_to_ndarrays(res.parameters) for _, res in benign_results]
 
         # 3. Apply Attack
-        stateful_types = ["Mimic"]
-
-        if attack_type in stateful_types:
-            n = len(results)
-            m = settings.attack.num_malicious_clients
-            if self.stateful_attack_engine is None:
-                if attack_type == "Mimic":
-                    self.stateful_attack_engine = MimicAttack(n, m, settings.attack, settings.attack.target_rank)
-
-            device = self.stateful_attack_engine.device
-            benign_tensors = []
-            for bw in benign_weights_list:
-                flat_t = torch.tensor(np.concatenate([w.flatten() for w in bw]), dtype=torch.float32, device=device)
-                benign_tensors.append(flat_t)
-
-            self.stateful_attack_engine.omniscient_callback(benign_tensors)
-            adv_flat = self.stateful_attack_engine.adv_momentum.cpu().numpy()
-
-            malicious_weights = []
-            ptr = 0
-            for w in benign_weights_list[0]:
-                malicious_weights.append(adv_flat[ptr : ptr + w.size].reshape(w.shape))
-                ptr += w.size
-
-        elif attack_type == "ALIE":
+        if attack_type == "ALIE":
             num_malicious_clients = len(malicious_results)
             malicious_weights = alie_attack(benign_weights_list, num_malicious_clients, settings.attack.alie_z_max)
         elif attack_type == "IPM":
             if self.current_global_parameters is None:
                 raise ValueError("Global parameters not captured in configure_fit. Cannot execute IPM.")
             malicious_weights = ipm_attack(benign_weights_list, self.current_global_parameters, settings.attack.epsilon)
-        elif attack_type == "Minmax":
-            malicious_weights = minmax_attack(benign_weights_list, settings.attack.dev_type)
-        elif attack_type == "MinSum":
-            malicious_weights = minsum_attack(benign_weights_list, settings.attack.dev_type)
+
 
         # 4. Overwrite malicious results
         if malicious_weights is not None:
-            for i in range(len(malicious_results)):
-                client, fit_res = malicious_results[i]
-                # Reconstruct FitRes with manipulated parameters (non-shared object)
+            for i, (client, fit_res) in enumerate(malicious_results):
                 manipulated_res = FitRes(
                     status=fit_res.status,
                     parameters=ndarrays_to_parameters(malicious_weights),

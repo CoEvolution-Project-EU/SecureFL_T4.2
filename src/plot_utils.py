@@ -237,7 +237,6 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
         linewidths=0.5,
         square=False,
     )
-    plt.title("True Physical Label Count per Partition")
     plt.xlabel("Partition ID (Sensor Profile)")
     plt.ylabel("Labels")
 

@@ -1,5 +1,5 @@
 server:
-  strategy: FedCluster
+  strategy: Mean
   fraction_fit: 1.0
   fraction_eval: 0.0
   dataset_size: 1.0
@@ -28,9 +28,9 @@ optimizer:
 attack:
   activation_round: 1
   num_malicious_clients: 10
-  type: Label-Flip
-  mean: 0.0
-  std: 1.0
+  type: ALIE
+  mean: 0
+  std: 2.0
   dev_type: std
 defence:
   activation_round: 1

@@ -5,13 +5,6 @@ import torch
 from src.settings import settings
 
 
-def flip_labels(labels: torch.tensor, total_number_classes: int) -> torch.tensor:
-    """
-    Flips the given labels matching FL-Byzantine-Library exactly.
-    It computes: ones_like(labels) * (classes - 1) - labels
-    """
-    new_labels = torch.ones_like(labels).mul_(total_number_classes - 1) - labels
-    return new_labels
 
 
 def semantic_label_flip(
@@ -74,20 +67,23 @@ def semantic_label_flip(
     return torch.where(mask, lookup[labels], torch.zeros_like(labels))
 
 
-def flip_sign(parameters):
+def flip_sign(parameters, original_weights, scale_factor=-1.0):
     """
-    Flips sign of gradients for model parameters (unused — kept for reference).
-    :param parameters: Model parameters
+    Performs a true Sign-Flip attack by negating the gradient update.
+    :param parameters: Model parameters after local training
+    :param original_weights: Model parameters before local training
+    :param scale_factor: Intensity of the flip (default -1.0 for true sign flip)
     """
-    for param in parameters:
-        if param.grad is not None:
-            param.grad *= -1
+    for param, orig_param in zip(parameters, original_weights):
+        update = param.data - orig_param
+        param.data = orig_param + (scale_factor * update)
 
 
 def add_gaussian_noise(parameters):
     """
-    Replaces model weights with pure Gaussian noise.
-    Each parameter tensor is replaced: param.data = N(mean, std²).
+    Adds Gaussian noise to model weights after local training.
+    To prevent numerical overflows (NaN) in deep architectures, the noise
+    is scaled proportionally to each layer's own standard deviation.
     :param parameters: Model parameters
     """
     parameters = list(parameters)
@@ -96,9 +92,18 @@ def add_gaussian_noise(parameters):
     mean = settings.attack.mean
 
     for param in parameters:
-        # Generate random weights from N(mean, sigma^2)
-        noise = (torch.randn_like(param.data) * sigma) + mean
-        param.data.copy_(noise)
+        # Calculate the standard deviation of the current layer's weights
+        param_std = torch.std(param.data)
+        if param_std.item() == 0 or torch.isnan(param_std):
+            param_std = 1.0  # Fallback to avoid zeroes or NaNs
+
+        # Scale the requested mean and sigma by the layer's actual magnitude
+        scaled_sigma = sigma * param_std
+        scaled_mean = mean * param_std
+
+        # Generate and add the relative noise
+        noise = (torch.randn_like(param.data) * scaled_sigma) + scaled_mean
+        param.data += noise
 
 
 # --- Omniscient Attacks ---
@@ -180,179 +185,3 @@ def ipm_attack(
     return malicious_weights
 
 
-def minmax_attack(benign_weights: list[list[np.ndarray]], dev_type: str = "std") -> list[np.ndarray]:
-    """
-    Optimization-based Min-Max attack to circumvent robust aggregators.
-    Finds the maximum perturbation lamda such that the maximum distance from the malicious
-    update to any benign update is bounded by the max pairwise distance between benign updates.
-    """
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    # Flatten all clients' weights into 1D tensors
-    all_updates = []
-    for client_w in benign_weights:
-        flat_t = torch.tensor(
-            np.concatenate([w.flatten() for w in client_w]),
-            dtype=torch.float32,
-            device=device,
-        )
-        all_updates.append(flat_t)
-    all_updates = torch.stack(all_updates)  # Shape: (n_good, d)
-
-    model_re = torch.mean(all_updates, dim=0)
-
-    if dev_type == "unit_vec":
-        deviation = model_re / (torch.norm(model_re) + 1e-8)
-    elif dev_type == "sign":
-        deviation = torch.sign(model_re)
-    elif dev_type == "std":
-        deviation = torch.std(all_updates, dim=0)
-    else:
-        deviation = torch.std(all_updates, dim=0)
-
-    lamda = torch.tensor(10.0, device=device)
-    threshold_diff = 1e-5
-    lamda_fail = lamda
-    lamda_succ = 0.0
-
-    # Calculate max pairwise distance among benign clients
-    distances = torch.cdist(all_updates, all_updates) ** 2
-    max_distance = torch.max(distances)
-
-    while torch.abs(lamda_succ - lamda) > threshold_diff:
-        mal_update = model_re - lamda * deviation
-        distance = torch.norm(all_updates - mal_update, dim=1) ** 2
-        max_d = torch.max(distance)
-
-        if max_d <= max_distance:
-            lamda_succ = lamda
-            lamda = lamda + lamda_fail / 2.0
-        else:
-            lamda = lamda - lamda_fail / 2.0
-
-        lamda_fail = lamda_fail / 2.0
-
-    mal_update = model_re - lamda_succ * deviation
-    adv_flat = mal_update.cpu().numpy()
-
-    from src.models import get_avisence_model_config
-
-    model_config = get_avisence_model_config(settings)
-    keys = list(model_config.model.state_dict().keys())
-
-    # Unflatten
-    malicious_weights = []
-    ptr = 0
-    for k, w in zip(keys, benign_weights[0]):
-        if "running_var" in k or "running_mean" in k or "num_batches_tracked" in k:
-            malicious_weights.append(w.copy())
-        else:
-            malicious_weights.append(adv_flat[ptr : ptr + w.size].reshape(w.shape))
-        ptr += w.size
-
-    return malicious_weights
-
-
-def minsum_attack(benign_weights: list[list[np.ndarray]], dev_type: str = "std") -> list[np.ndarray]:
-    """
-    Optimization-based Min-Sum attack.
-    Finds the maximum perturbation lamda such that the sum of distances from the malicious
-    update to all benign updates is bounded by the minimum sum among benign updates.
-    """
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-    all_updates = []
-    for client_w in benign_weights:
-        flat_t = torch.tensor(
-            np.concatenate([w.flatten() for w in client_w]),
-            dtype=torch.float32,
-            device=device,
-        )
-        all_updates.append(flat_t)
-    all_updates = torch.stack(all_updates)  # Shape: (n_good, d)
-
-    model_re = torch.mean(all_updates, dim=0)
-
-    if dev_type == "unit_vec":
-        deviation = model_re / (torch.norm(model_re) + 1e-8)
-    elif dev_type == "sign":
-        deviation = torch.sign(model_re)
-    elif dev_type == "std":
-        deviation = torch.std(all_updates, dim=0)
-    else:
-        deviation = torch.std(all_updates, dim=0)
-
-    lamda = torch.tensor(10.0, device=device)
-    threshold_diff = 1e-5
-    lamda_fail = lamda
-    lamda_succ = 0.0
-
-    # Calculate min sum of distances among benign clients
-    distances = torch.cdist(all_updates, all_updates) ** 2
-    scores = torch.sum(distances, dim=1)
-    min_score = torch.min(scores)
-
-    while torch.abs(lamda_succ - lamda) > threshold_diff:
-        mal_update = model_re - lamda * deviation
-        distance = torch.norm(all_updates - mal_update, dim=1) ** 2
-        score = torch.sum(distance)
-
-        if score <= min_score:
-            lamda_succ = lamda
-            lamda = lamda + lamda_fail / 2.0
-        else:
-            lamda = lamda - lamda_fail / 2.0
-
-        lamda_fail = lamda_fail / 2.0
-
-    mal_update = model_re - lamda_succ * deviation
-    adv_flat = mal_update.cpu().numpy()
-
-    from src.models import get_avisence_model_config
-
-    model_config = get_avisence_model_config(settings)
-    keys = list(model_config.model.state_dict().keys())
-
-    # Unflatten
-    malicious_weights = []
-    ptr = 0
-    for k, w in zip(keys, benign_weights[0]):
-        if "running_var" in k or "running_mean" in k or "num_batches_tracked" in k:
-            malicious_weights.append(w.copy())
-        else:
-            malicious_weights.append(adv_flat[ptr : ptr + w.size].reshape(w.shape))
-        ptr += w.size
-
-    return malicious_weights
-
-
-# --- Stateful Attacks ---
-
-
-class _BaseStatefulAttack:
-    def __init__(self, n, m, settings_attack):
-        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.n = n
-        self.m = m
-        self.adv_momentum = None
-        self.args = settings_attack
-
-    def omniscient_callback(self, benign_gradients: list[torch.Tensor]):
-        raise NotImplementedError
-
-
-class MimicAttack(_BaseStatefulAttack):
-    """
-    Simple Mimic attack that copies the gradient of a specific target client.
-    """
-
-    def __init__(self, n, m, settings_attack, target_rank=None):
-        super().__init__(n, m, settings_attack)
-        self.target_rank = target_rank if target_rank is not None else 0
-
-    def omniscient_callback(self, benign_gradients):
-        if not benign_gradients:
-            return
-
-        target_idx = min(self.target_rank, len(benign_gradients) - 1)
-        self.adv_momentum = benign_gradients[target_idx].clone().to(self.device)

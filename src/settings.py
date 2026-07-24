@@ -176,7 +176,7 @@ class Attack(BaseModel):
         """
         Validate attack type.
         """
-        attack_types = ["Gaussian", "IPM", "ALIE", "Mimic", "Minmax", "MinSum", "Label-Flip", "Sign-Flip", "None"]
+        attack_types = ["Gaussian", "IPM", "ALIE", "Semantic-Label-Flip", "Sign-Flip", "None"]
         if value not in attack_types + [None]:
             raise ValueError(f"Under attack configuration: {info.field_name} must be in {attack_types}. Got {value}")
         return value
@@ -189,7 +189,7 @@ class Defence(BaseModel):
     beta: float = 0.2  # For Trimmed Mean Strategy only
     rfa_t: int = 5  # For RFA Strategy
     rfa_nu: float = 1e-6  # For RFA Strategy
-    rfa_b: int = 5  # For RFA Strategy
+
 
     # For FoolsGold Strategy
     fg_use_memory: bool = True
@@ -448,64 +448,3 @@ class Config(BaseModel):
                 f"total number of clients ({num_clients}). "
             )
 
-        if value.type == "Mimic":
-            benign_clients = num_clients - value.num_malicious_clients
-            if value.target_rank >= benign_clients:
-                raise ValueError(
-                    f"For the Mimic attack, target_rank ({value.target_rank}) must be strictly less than "
-                    f"the number of benign clients ({benign_clients})."
-                )
-
-        return value
-
-    @field_validator("attack", "defence")
-    def validate_activation_round(cls, value: Attack | Defence, info: ValidationInfo):
-        """
-        Check that the activation round (Attack or Defence attribute) is valid.
-        It should not exceed the total number of FL rounds.
-        :param value: Instance of Attack or Defence class
-        :param info: Instance of Config class
-        :return: Validated activation round or raise exception
-        """
-        if "server" not in info.data.keys():
-            raise ValueError("Server arguments are not properly defined.")
-        num_rounds = info.data["server"].num_rounds
-        activation_round = value.activation_round
-        if num_rounds < activation_round:
-            raise ValueError(
-                f"Activation round for '{info.field_name}' cannot exceed total number of FL rounds ({num_rounds}). "
-                f"Got activation round={activation_round}"
-            )
-        return value
-
-
-
-
-PROJECT_NAME = "FL Defense Project"
-FOLDER_DIR = Path(__file__).parent.parent
-config_name = os.getenv("config_file_name", "config")
-if config_name.endswith(".yaml"):
-    config_name = config_name[:-5]
-elif config_name.endswith(".yml"):
-    config_name = config_name[:-4]
-config_file = FOLDER_DIR / f"{config_name}.yaml"
-
-try:
-    settings = Config(config_file)
-except ValidationError as e:
-    print("\n[Configuration Error]")
-    for error in e.errors():
-        print(f"❌ {error.get('msg', 'Validation Error')}")
-    print()
-    sys.exit(1)
-
-
-def _global_value_error_handler(exc_type, exc_value, traceback):
-    if issubclass(exc_type, ValueError):
-        print("\n[Error]")
-        print(f"❌ {exc_value}\n")
-    else:
-        sys.__excepthook__(exc_type, exc_value, traceback)
-
-
-sys.excepthook = _global_value_error_handler

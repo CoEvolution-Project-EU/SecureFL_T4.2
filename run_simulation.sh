@@ -1,7 +1,8 @@
 #!/bin/bash
 
-ATTACKS=("Label-Flip" "Gaussian" "Sign-Flip" "IPM" "ALIE" "None")
-DEFENCES=("FedGreed" "FedCluster" "Mean" "MultiKrum" "RFA" "FL-Defender" "FoolsGold")
+# ATTACKS=("Semantic-Label-Flip" "Gaussian" "Sign-Flip" "IPM" "ALIE" "None")
+ATTACKS=("Sign-Flip" "IPM" "Gaussian" "ALIE" "None")
+DEFENCES=("FedCluster" "FedGreed" "Mean" "Multi-Krum" "RFA" "FL-Defender" "FoolsGold")
 
 NUM_CLIENTS=20
 NUM_MALICIOUS_CLIENTS=10
@@ -29,6 +30,13 @@ for ATTACK in "${ATTACKS[@]}"; do
     echo "=================================================="
     echo "Starting simulation for Attack: \"$ATTACK\" | Defence: \"$DEFENCE\""
     echo "=================================================="
+    
+    # # Skip FedCluster when using Sign-Flip
+    # if [ "$ATTACK" = "Sign-Flip" ] && [ "$DEFENCE" = "FedCluster" ]; then
+    #   echo "Skipping combination Attack: $ATTACK | Defence: $DEFENCE"
+    #   echo ""
+    #   continue
+    # fi
     
     # Update Attack type safely (scoped under attack:)
     awk -v att="${ATTACK}" '

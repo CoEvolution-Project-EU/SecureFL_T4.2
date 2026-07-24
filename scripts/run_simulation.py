@@ -72,7 +72,7 @@ def simulate() -> None:
         
         client_app, client_sensor_configs = get_client_fn(malicious_ids)
 
-        # 4. Generate client split distribution accurately before simulation
+        # Generate client split distribution accurately before simulation
         if settings.use_case.name == "AVISENCE":
             from src.task import compute_exact_client_distributions
             client_distributions, client_indices = compute_exact_client_distributions(
