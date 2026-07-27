@@ -1,5 +1,5 @@
 server:
-  strategy: Mean
+  strategy: FoolsGold
   fraction_fit: 1.0
   fraction_eval: 0.0
   dataset_size: 1.0
@@ -28,7 +28,7 @@ optimizer:
 attack:
   activation_round: 1
   num_malicious_clients: 10
-  type: ALIE
+  type: Semantic-Label-Flip
   mean: 0
   std: 2.0
   dev_type: std
@@ -46,23 +46,23 @@ backend:
 
 use_case:
   name: "AVISENCE"
-  data_split: "sensor" # [sensor, iid, non-iid, inverse-non-iid]
+  data_split: "sensor" # [sensor, iid]
   sensor_profiles:
-    standard: {}  # No masking — full dataset, used as the baseline reference client
-    blind_to_class:
+    Full-View: {}  # No masking — full dataset, used as the baseline reference client
+    Blind-Class:
       # Firmware-level failure: the sensor is completely blind to entire categories
       # of objects. Each client assigned to this profile is blinded to a different
       # category, assigned in round-robin order.
       blinded_categories:
         - Structure # class IDs: [4,5,6,7,8,9,10,11] (trunk, plants, traffic sign, pole, trashcan, building, cone/stone, fence)
         - Vehicle   # class IDs: [3, 12]             (car, bike)
-        - Human     # class IDs: [1, 2]              (person/2+person, rider)
+        - Human     # class IDs: [1, 2]              (person, rider)
         - Ground    # class IDs: [13]                (ground)
-    directional:
+    Limited-Angle:
       base_fov_angle: 90.0      # degrees of visible FOV (out of 360)
       angle_variance: 10.0
       mounting_jitter: 20.0     # random shift of center in degrees (0=left edge, 180=back/center)
-    narrow_fov_up:
+    Upper-View:
       # Simulates a LiDAR tilted aggressively upward. Drops all points
       # below a Z threshold, erasing ground-level classes (road, sidewalk, parking).
       base_z_threshold: 1.5

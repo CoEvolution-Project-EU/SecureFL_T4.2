@@ -3,11 +3,14 @@ from typing import Dict
 
 import torch
 from flwr.common import Context, ndarrays_to_parameters
+
+from modules.utils import iouEval
 from flwr.common.logger import log
 from flwr.server import ServerApp, ServerAppComponents, ServerConfig
 from torch.utils.data import DataLoader, Subset
 
 from src.models import ModelConfig, get_avisence_model_config, get_weights, set_weights
+from src.utils import on_fit_config, weighted_average
 from src.settings import settings
 from src.strategies.bulyan_strategy import BulyanStrategy
 from src.strategies.fedcluster import FedClusterStrategy
@@ -25,8 +28,15 @@ from src.task import create_run_dir, test
 
 
 def gen_evaluate_fn(model_config: ModelConfig):
-    """Generate the evaluation function for AVISENCE use case."""
-    from modules.utils import iouEval
+    """
+    Generates a server-side evaluation function for the AVISENCE global model.
+
+    The returned function evaluates the global parameters on a centralized validation 
+    dataset, yielding the overall loss and accuracy metrics to monitor global convergence.
+
+    :param model_config: The architecture and metadata configuration for the model.
+    :return: A callable evaluation function compatible with Flower's Strategy API.
+    """
 
     test_dataset = settings.use_case.parser.valid_dataset
     indices = torch.arange(len(test_dataset))
@@ -49,36 +59,16 @@ def gen_evaluate_fn(model_config: ModelConfig):
     return evaluate
 
 
-def on_fit_config(server_round: int):
-    """
-    Construct `config` that clients receive when running `fit()`
-    :param server_round: server round
-    """
-    # Activate attack on configurable server round
-    attack_activated = False
-    if settings.attack.activation_round != 0 and server_round >= settings.attack.activation_round:
-        attack_activated = True
-
-    return {"attack_activated": attack_activated, "lr": settings.optimizer.lr}
-
-
-# Define metric aggregation function
-def weighted_average(metrics) -> Dict[str, float]:
-    """
-    Calculate the federated evaluation accuracy based on the sum of weighted accuracies
-    from each client divided by the sum of all examples.
-    :param metrics: List of client metrics to calculate average across all clients.
-    :return: Dictionary of federated evaluation accuracy
-    """
-    # Multiply accuracy of each client by number of examples used
-    accuracies = [num_examples * m["accuracy"] for num_examples, m in metrics]
-    examples = [num_examples for num_examples, _ in metrics]
-
-    # Aggregate and return custom metric (weighted average)
-    return {"federated_evaluate_accuracy": sum(accuracies) / sum(examples)}
-
 
 def get_server_fn():
+    """
+    Initializes the federated learning server factory.
+
+    Configures global logging, selects the aggregation strategy (with optional defense 
+    mechanisms), and returns a Flower ServerApp capable of coordinating the simulation.
+
+    :return: A configured Flower ServerApp instance.
+    """
     def server_fn(context: Context):
         # Read from config
         if settings.use_case is None or settings.use_case.name != "AVISENCE":

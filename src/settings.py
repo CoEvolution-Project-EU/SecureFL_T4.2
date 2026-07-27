@@ -15,8 +15,18 @@ from pydantic import (
 )
 from yaml import safe_load
 
+from avisence_datasets.poss.parser import Parser
+from modules.loss.boundary_loss import BoundaryLoss
+from modules.loss.Lovasz_Softmax import Lovasz_softmax
+
 
 class Server(BaseModel):
+    """
+    Configuration for the federated learning server.
+    
+    Defines the aggregation strategy, fraction of clients to select, and 
+    hyperparameters controlling the global training rounds.
+    """
     strategy: str
     fraction_fit: float
     fraction_eval: float
@@ -27,10 +37,11 @@ class Server(BaseModel):
     @field_validator("fraction_fit", "fraction_eval", "dataset_size")
     def validate_percentages(cls, value, info):
         """
-        Validate individual percentage fields are between 0.0 and 1.0.
-        :param value: Field validator
-        :param info: Instance of Server class
-        :return: Validated fields are between 0.0 and 1.0 or raises exception.
+        Validates that percentage fields are strictly between 0.0 and 1.0.
+        
+        :param value: The percentage value being validated.
+        :param info: Validation context providing the field name.
+        :return: The validated percentage value.
         """
         if value < 0.0 or value > 1.0:
             raise ValueError(f"Under server configuration: {info.field_name} must be between 0.0 and 1.0. Got {value}")
@@ -39,10 +50,11 @@ class Server(BaseModel):
     @field_validator("batch_size", "num_rounds")
     def validate_positive(cls, value, info):
         """
-        Validate individual fields are positive.
-        :param value: Field validator
-        :param info: Instance of Server class
-        :return: Validated fields are positive values or raises exception.
+        Validates that integer configuration fields are strictly positive.
+        
+        :param value: The integer value being validated.
+        :param info: Validation context providing the field name.
+        :return: The validated positive integer.
         """
         if value <= 0:
             raise ValueError(f"Under server configuration: {info.field_name} must be positive. Got {value}")
@@ -51,10 +63,11 @@ class Server(BaseModel):
     @field_validator("strategy")
     def validate_server_strategy(cls, value: str, info: ValidationInfo):
         """
-        Validate strategy type.
-        :param value: Field validator
-        :param info: Instance of Strategy type
-        :return: Validated attack type or raises exception.
+        Validates the server aggregation strategy against supported algorithms.
+        
+        :param value: The strategy name to validate (e.g., 'Mean', 'Krum').
+        :param info: Validation context.
+        :return: The validated strategy string.
         """
         strategy_types = [
             "Mean",
@@ -65,7 +78,6 @@ class Server(BaseModel):
             "Median",
             "FedCluster",
             "FedGreed",
-            "FedEE",
             "FedTruncate",
             "FL-Defender",
             "FoolsGold",
@@ -78,6 +90,11 @@ class Server(BaseModel):
 
 
 class Client(BaseModel):
+    """
+    Configuration for federated learning clients.
+    
+    Specifies the total pool of clients and their local training hyperparameters.
+    """
     num_clients: int
     batch_size: int
     local_epochs: int
@@ -85,10 +102,11 @@ class Client(BaseModel):
     @field_validator("num_clients", "batch_size", "local_epochs")
     def validate_positive(cls, value, info):
         """
-        Validate individual fields are positive.
-        :param value: Field validator
-        :param info: Instance of Client class
-        :return: Validated fields are positive values or raises exception.
+        Validates that client configuration fields are strictly positive.
+        
+        :param value: The integer value being validated.
+        :param info: Validation context.
+        :return: The validated positive integer.
         """
         if value <= 0:
             raise ValueError(f"Under client configuration: {info.field_name} must be positive. Got {value}")
@@ -96,6 +114,9 @@ class Client(BaseModel):
 
 
 class Dataset(BaseModel):
+    """
+    Configuration for the simulated dataset.
+    """
     name: str
 
     @field_validator("name")
@@ -106,6 +127,9 @@ class Dataset(BaseModel):
 
 
 class Model(BaseModel):
+    """
+    Configuration specifying the neural network architecture.
+    """
     name: str
 
     @field_validator("name")
@@ -118,6 +142,9 @@ class Model(BaseModel):
 
 
 class Optimizer(BaseModel):
+    """
+    Configuration for the local training optimizer (e.g., SGD, Adam).
+    """
     name: str = "sgd"
     lr: float = 0.1
     lr_decay_epochs: list[int] = 75
@@ -135,6 +162,12 @@ class Optimizer(BaseModel):
 
 
 class Attack(BaseModel):
+    """
+    Configuration detailing malicious client attacks.
+    
+    Controls the type of attack, the number of colluding malicious clients, 
+    and attack-specific scaling hyperparameters.
+    """
     activation_round: int = 0
     num_malicious_clients: int = 0
 
@@ -152,7 +185,11 @@ class Attack(BaseModel):
     @field_validator("dev_type")
     def validate_dev_type(cls, value: str, info: ValidationInfo):
         """
-        Validate perturbation vector type.
+        Validates the vector type used for perturbation attacks.
+        
+        :param value: The perturbation type (e.g., 'std', 'sign').
+        :param info: Validation context.
+        :return: The validated string.
         """
         dev_types = ["std", "sign", "unit_vec"]
         if value not in dev_types:
@@ -162,10 +199,11 @@ class Attack(BaseModel):
     @field_validator("activation_round", "num_malicious_clients")
     def validate_positive(cls, value, info):
         """
-        Validate individual fields are positive.
-        :param value: Field validator
-        :param info: Instance of Attack class
-        :return: Validated fields are positive values or raises exception.
+        Validates that the attack activation round and client counts are non-negative.
+        
+        :param value: The integer or float value being validated.
+        :param info: Validation context.
+        :return: The validated numerical value.
         """
         if value < 0:
             raise ValueError(f"Under attack configuration: {info.field_name} must be non-negative. Got {value}")
@@ -174,15 +212,34 @@ class Attack(BaseModel):
     @field_validator("type")
     def validate_attack_type(cls, value: str | None, info: ValidationInfo):
         """
-        Validate attack type.
+        Validates the configured attack algorithm against supported types.
+        
+        :param value: The chosen attack (e.g., 'ALIE', 'IPM').
+        :param info: Validation context.
+        :return: The validated attack string.
         """
         attack_types = ["Gaussian", "IPM", "ALIE", "Semantic-Label-Flip", "Sign-Flip", "None"]
         if value not in attack_types + [None]:
             raise ValueError(f"Under attack configuration: {info.field_name} must be in {attack_types}. Got {value}")
         return value
 
+    @model_validator(mode="after")
+    def zero_malicious_clients_if_no_attack(self):
+        """
+        Automatically overrides num_malicious_clients to 0 when no attack is taking place.
+        """
+        if self.type == "None" or self.type is None:
+            self.num_malicious_clients = 0
+        return self
+
 
 class Defence(BaseModel):
+    """
+    Configuration detailing server-side robust aggregation defenses.
+    
+    Includes hyperparameters for tuning defenses like Trimmed Mean, RFA, 
+    FoolsGold, and FL-Defender.
+    """
     activation_round: int = 0
     lbc_num_selected_clients: int = 0
     defence_dataset_percentage: float = 0.1
@@ -206,10 +263,11 @@ class Defence(BaseModel):
     @field_validator("beta")
     def validate_percentages(cls, value: float, info: ValidationInfo):
         """
-        Validate individual percentage fields are between 0.0 and 1.0.
-        :param value: Field validator
-        :param info: Instance of Defence class
-        :return: Validated fields are between 0.0 and 1.0 or raises exception.
+        Validates that percentage fields associated with defense configurations are strictly between 0.0 and 1.0.
+        
+        :param value: The percentage value being validated.
+        :param info: Validation context providing the field name.
+        :return: The validated percentage value.
         """
         if value < 0.0 or value > 1.0:
             raise ValueError(f"Under attack configuration: {info.field_name} must be between 0.0 and 1.0. Got {value}")
@@ -231,7 +289,11 @@ class Defence(BaseModel):
     @field_validator("B", "B0", "gamma", "eps")
     def validate_non_negative_floats(cls, value: float, info: ValidationInfo):
         """
-        Validate non-negative float parameters for FedTruncate.
+        Validates that specific float hyperparameters (e.g., FedTruncate thresholds) are non-negative.
+        
+        :param value: The float value to validate.
+        :param info: Validation context.
+        :return: The validated float value.
         """
         if value < 0.0:
             raise ValueError(f"Under attack configuration: {info.field_name} must be non-negative. Got {value}")
@@ -304,7 +366,7 @@ class LENetConfig(BaseModel):
 
 class UseCase(BaseModel):
     name: str
-    data_split: Literal["non-iid", "inverse-non-iid", "iid", "sensor"] = "iid"
+    data_split: Literal["iid", "sensor"] = "iid"
     sensor_profiles: Optional[dict] = None
     sensor_mapping: Optional[dict] = None
     data_config_path: str
@@ -323,7 +385,12 @@ class UseCase(BaseModel):
 
     @model_validator(mode="after")
     def init_configs(self):
-        """Load configs after UseCase is constructed"""
+        """
+        Dynamically loads secondary configuration files after the UseCase instance is constructed.
+        
+        This bridges the Pydantic structured configuration with the legacy dictionary-based 
+        model configurations expected by the AVISENCE architecture.
+        """
         if self.name == "AVISENCE":
             # Map lenet_poss_config to dictionary to preserve compatibility with dict-based codebase
             self.model_architecture_config = self.lenet_poss_config.model_dump()
@@ -336,7 +403,6 @@ class UseCase(BaseModel):
     def init_parser(self, local_batch_size: int):
         match self.name:
             case "AVISENCE":
-                from avisence_datasets.poss.parser import Parser
 
                 self.parser = Parser(
                     root=self.data_dir,
@@ -360,8 +426,6 @@ class UseCase(BaseModel):
     def init_loss_functions(self, device):
         match self.name:
             case "AVISENCE":
-                from modules.loss.boundary_loss import BoundaryLoss
-                from modules.loss.Lovasz_Softmax import Lovasz_softmax
 
                 """Setup loss functions"""
                 # Calculate class weights from dataset
@@ -447,4 +511,56 @@ class Config(BaseModel):
                 f"Number of malicious clients ({value.num_malicious_clients}) cannot exceed "
                 f"total number of clients ({num_clients}). "
             )
+
+        return value
+
+    @field_validator("attack", "defence")
+    def validate_activation_round(cls, value: Attack | Defence, info: ValidationInfo):
+        """
+        Check that the activation round (Attack or Defence attribute) is valid.
+        It should not exceed the total number of FL rounds.
+        :param value: Instance of Attack or Defence class
+        :param info: Instance of Config class
+        :return: Validated activation round or raise exception
+        """
+        if "server" not in info.data.keys():
+            raise ValueError("Server arguments are not properly defined.")
+        num_rounds = info.data["server"].num_rounds
+        activation_round = value.activation_round
+        if num_rounds < activation_round:
+            raise ValueError(
+                f"Activation round for '{info.field_name}' cannot exceed total number of FL rounds ({num_rounds}). "
+                f"Got activation round={activation_round}"
+            )
+        return value
+
+
+PROJECT_NAME = "FL Defense Project"
+FOLDER_DIR = Path(__file__).parent.parent
+config_name = os.getenv("config_file_name", "config")
+if config_name.endswith(".yaml"):
+    config_name = config_name[:-5]
+elif config_name.endswith(".yml"):
+    config_name = config_name[:-4]
+config_file = FOLDER_DIR / f"{config_name}.yaml"
+
+try:
+    settings = Config(config_file)
+except ValidationError as e:
+    print("\n[Configuration Error]")
+    for error in e.errors():
+        print(f"❌ {error.get('msg', 'Validation Error')}")
+    print()
+    sys.exit(1)
+
+
+def _global_value_error_handler(exc_type, exc_value, traceback):
+    if issubclass(exc_type, ValueError):
+        print("\n[Error]")
+        print(f"❌ {exc_value}\n")
+    else:
+        sys.__excepthook__(exc_type, exc_value, traceback)
+
+
+sys.excepthook = _global_value_error_handler
 

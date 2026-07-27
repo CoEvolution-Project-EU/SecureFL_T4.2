@@ -17,7 +17,13 @@ from src.strategies.base_strategy import StrategyTrackingMixin
 
 
 class MedianStrategy(StrategyTrackingMixin, FedMedian):
-    """FedMedian strategy with result tracking, model checkpointing, and W&B logging."""
+    """
+    Coordinate-wise Median (FedMedian) robust aggregation strategy.
+
+    Inherits from the base FedMedian implementation to defend against Byzantine failures 
+    by computing the median of parameter updates coordinate-by-coordinate, which limits 
+    the impact of extreme outlier values.
+    """
 
     def __init__(self, *args, **kwargs):
         model_config = kwargs.pop("model_config", None)
@@ -30,7 +36,14 @@ class MedianStrategy(StrategyTrackingMixin, FedMedian):
         results: list[tuple[ClientProxy, FitRes]],
         failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
     ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
-        """Aggregate fit results using coordinate-wise median."""
+        """
+        Executes robust aggregation using a coordinate-wise median across all local updates.
+
+        :param server_round: The current federated learning round.
+        :param results: A list of parameter updates successfully received from active clients.
+        :param failures: A list of encountered errors or unresponsive clients.
+        :return: A tuple containing the aggregated global parameters and an empty metrics dictionary.
+        """
         if not results:
             return None, {}
         if not self.accept_failures and failures:

@@ -17,6 +17,7 @@ from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader, Subset
 import torch
 
+from src.plot_utils import plot_metrics_scatter
 from src.models import set_weights
 from src.settings import settings
 from src.strategies.base_strategy import StrategyTrackingMixin
@@ -24,11 +25,13 @@ from src.task import create_run_dir, test
 
 
 class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
-    """Defense strategy that filters client updates by clustering validation loss.
+    """
+    FedCluster Robust Aggregation Strategy.
 
-    Supports two modes:
-    (1) Fixed Mode: Selects top-N clients with the lowest loss.
-    (2) Dynamic Mode: Uses KMeans (k=2) to separate honest from adversarial clients.
+    Defends against data poisoning by clustering client updates based on their 
+    validation loss against a server-side dataset. Supports a fixed mode (selecting 
+    the top-N clients) and a dynamic mode (using K-Means clustering with k=2 to 
+    automatically distinguish between honest and adversarial distributions).
     """
 
     def __init__(self, *args, **kwargs):
@@ -48,15 +51,13 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
 
     def _apply_defence(
         self, results: list[tuple[ClientProxy, FitRes]], server_round: int = -1
-    ) -> tuple[list[tuple[ClientProxy, FitRes]], int]:
-        """Evaluate, rank, and filter client updates by validation loss.
+    ) -> tuple[list[tuple[ClientProxy, FitRes]], int, float, float]:
+        """
+        Evaluates client updates and filters them using K-Means clustering or a fixed threshold.
 
-        Args:
-            results: List of (ClientProxy, FitRes) tuples received from active clients.
-            server_round: Current server round (used for plot filenames).
-
-        Returns:
-            The filtered results and the number of selected clients.
+        :param results: A list of (ClientProxy, FitRes) tuples representing received client updates.
+        :param server_round: The current federated learning round (used for plot generation).
+        :return: A tuple containing the filtered list of accepted client results and the integer count of selected clients.
         """
         updated_results = []
         for client_proxy, fit_res in results:
@@ -68,8 +69,20 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
         updated_results = sorted(updated_results, key=lambda x: x[0])
         ordered_losses = [r[0] for r in updated_results]
 
-        honest_losses = [f"{loss:.4f}" for loss, ctype, _, _ in updated_results if ctype == "Honest"]
-        malicious_losses = [f"{loss:.4f}" for loss, ctype, _, _ in updated_results if ctype == "Malicious"]
+        honest_raw_losses = [loss for loss, ctype, _, _ in updated_results if ctype == "Honest"]
+        malicious_raw_losses = [loss for loss, ctype, _, _ in updated_results if ctype == "Malicious"]
+        
+        honest_mean_loss = float(np.mean(honest_raw_losses)) if honest_raw_losses else 0.0
+        malicious_mean_loss = float(np.mean(malicious_raw_losses)) if malicious_raw_losses else 0.0
+
+        honest_losses = [
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results if ctype == "Honest"
+        ]
+        malicious_losses = [
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results if ctype == "Malicious"
+        ]
 
         log(
             INFO,
@@ -94,10 +107,12 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
             )
 
         accepted_honest = [
-            f"{loss:.4f}" for loss, ctype, _, _ in updated_results[:num_selected_clients] if ctype == "Honest"
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results[:num_selected_clients] if ctype == "Honest"
         ]
         accepted_malicious = [
-            f"{loss:.4f}" for loss, ctype, _, _ in updated_results[:num_selected_clients] if ctype == "Malicious"
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results[:num_selected_clients] if ctype == "Malicious"
         ]
         strategy_name = self.__class__.__name__
         log(
@@ -116,7 +131,7 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
         )
 
         try:
-            from src.plot_utils import plot_metrics_scatter
+
 
             losses_to_plot = [r[0] for r in updated_results]
             client_types = [r[1] for r in updated_results]
@@ -129,7 +144,7 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
             log(WARNING, "Metrics plotting failed: %s", e)
 
         filtered_results = [result[2:] for result in updated_results[:num_selected_clients]]
-        return filtered_results, num_selected_clients
+        return filtered_results, num_selected_clients, honest_mean_loss, malicious_mean_loss
 
     @staticmethod
     def _set_clients_for_aggregation(losses: list[float]) -> int:
@@ -152,6 +167,11 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
             "[FedCluster - KMeans] Cluster 0 (honest) count: %d, Cluster 1 (adversarial) count: %d",
             num_honest_users,
             len(losses_arr) - num_honest_users,
+        )
+        log(
+            INFO,
+            "[FedCluster - KMeans] Cluster Centroids: %s",
+            kmeans.cluster_centers_.flatten(),
         )
         return num_honest_users
 
@@ -179,8 +199,17 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
         )
 
         if settings.defence.activation_round != 0 and server_round >= settings.defence.activation_round:
-            updated_results, num_selected_clients = self._apply_defence(results, server_round)
+            updated_results, num_selected_clients, honest_mean_loss, malicious_mean_loss = self._apply_defence(results, server_round)
             parameters_aggregated = ndarrays_to_parameters(aggregate_inplace(updated_results))
+
+            self._log_results(
+                server_round=server_round,
+                tag="attack_stats",
+                results_dict={
+                    "honest_mean_loss": honest_mean_loss,
+                    "malicious_mean_loss": malicious_mean_loss,
+                },
+            )
         else:
             num_selected_clients = 0
             parameters_aggregated = ndarrays_to_parameters(aggregate_inplace(results))
@@ -191,7 +220,7 @@ class FedClusterStrategy(StrategyTrackingMixin, FedAvg):
             results_dict={"num_selected_clients": num_selected_clients},
         )
 
-        metrics_aggregated = {}
+        metrics_aggregated = {"num_selected_clients": num_selected_clients}
         if server_round == 1:
             log(WARNING, "No fit_metrics_aggregation_fn provided")
 

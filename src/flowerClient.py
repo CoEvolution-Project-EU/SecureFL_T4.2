@@ -1,5 +1,7 @@
 import torch
 from flwr.client import NumPyClient
+
+from modules.utils import iouEval
 from flwr.common import NDArrays, Scalar
 from torch.utils.data import DataLoader, Subset
 
@@ -9,11 +11,12 @@ from src.task import test, train
 
 
 class FlowerClient(NumPyClient):
-    """A simple client that showcases how to use the state.
+    """
+    A custom Flower client for federated learning.
 
-    It implements a basic version of `personalization` by which
-    the classification layer of the CNN is stored locally and used
-    and updated during `fit()` and used during `evaluate()`.
+    This client maintains a local model instance and provides the standard fit and evaluate 
+    interfaces for federated interaction. It simulates local data loading, applies optional 
+    sensor-specific masking, and executes local attacks if marked as malicious.
     """
 
     def __init__(
@@ -38,7 +41,6 @@ class FlowerClient(NumPyClient):
         if settings.use_case is None or settings.use_case.name != "AVISENCE":
             raise ValueError("Only the AVISENCE use case is supported in this configuration.")
 
-        from modules.utils import iouEval
 
         self.client_indices = client_indices
         client_dataset = Subset(settings.use_case.parser.train_dataset, self.client_indices)
@@ -53,15 +55,16 @@ class FlowerClient(NumPyClient):
         self.local_layer_name = "classification-head"
 
     def fit(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[NDArrays, int, dict[str, Scalar]]:
-        """Train model locally.
+        """
+        Trains the global model on the client's local data partition.
 
-        The client stores in its context the parameters of the last layer in the model
-        (i.e. the classification head). The classifier is saved at the end of the
-        training and used the next time this client participates.
-        :param parameters : The current (global) model parameters.
-        :param config : Configuration parameters which allow the server to influence training
-        on the client. It can be used to communicate arbitrary values from the server to the client,
-        for example, to set the number of (local) training epochs.
+        Receives the global model parameters from the server, updates the local model, 
+        and performs local epochs of training. If the client is malicious and the attack 
+        is activated, adversarial manipulations are applied during this phase.
+
+        :param parameters: The current global model parameters provided by the server.
+        :param config: A configuration dictionary containing training instructions (e.g., learning rate, attack activation).
+        :return: A tuple containing the updated local parameters, the number of training examples used, and a metrics dictionary.
         """
         attack_activated = bool(config["attack_activated"])
         lr = float(config["lr"])
@@ -88,14 +91,16 @@ class FlowerClient(NumPyClient):
         )
 
     def evaluate(self, parameters: NDArrays, config: dict[str, Scalar]) -> tuple[float, int, dict[str, Scalar]]:
-        """Evaluate the global model on the local validation set.
+        """
+        Evaluates the global model on the client's local validation set.
 
-        Note the classification head is replaced with the weights this client had the
-        last time it trained the model.
-        :param parameters : The current (global) model parameters.
-        :param config : Configuration parameters which allow the server to influence evaluation
-        on the client. It can be used to communicate arbitrary values from the server to the client,
-        for example, to influence the number of examples used for evaluation.
+        Overwrites the local model with the provided global parameters and computes 
+        the loss, accuracy, and Jaccard index to assess the model's performance on 
+        the client's localized data distribution.
+
+        :param parameters: The current global model parameters provided by the server.
+        :param config: A configuration dictionary detailing evaluation instructions.
+        :return: A tuple containing the computed loss, the number of validation examples used, and a metrics dictionary.
         """
         set_weights(self.model, parameters)
 

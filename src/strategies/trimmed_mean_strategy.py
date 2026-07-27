@@ -18,7 +18,13 @@ from src.strategies.base_strategy import StrategyTrackingMixin
 
 
 class TrimmedMeanStrategy(StrategyTrackingMixin, FedTrimmedAvg):
-    """FedTrimmedAvg strategy with result tracking, model checkpointing, and W&B logging."""
+    """
+    Trimmed Mean (FedTrimmedAvg) robust aggregation strategy.
+
+    Inherits from the base FedTrimmedAvg implementation to defend against Byzantine failures 
+    by discarding the highest and lowest parameter values before averaging the remainder, 
+    effectively removing malicious extremes.
+    """
 
     def __init__(self, *args, **kwargs):
         model_config = kwargs.pop("model_config", None)
@@ -32,7 +38,14 @@ class TrimmedMeanStrategy(StrategyTrackingMixin, FedTrimmedAvg):
         results: list[tuple[ClientProxy, FitRes]],
         failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
     ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
-        """Aggregate fit results using trimmed mean."""
+        """
+        Executes robust aggregation by calculating the trimmed mean of client updates.
+
+        :param server_round: The current federated learning round.
+        :param results: A list of parameter updates successfully received from active clients.
+        :param failures: A list of encountered errors or unresponsive clients.
+        :return: A tuple containing the aggregated global parameters and an empty metrics dictionary.
+        """
         if not results:
             return None, {}
         if not self.accept_failures and failures:

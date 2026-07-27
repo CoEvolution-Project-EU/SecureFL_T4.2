@@ -25,10 +25,12 @@ omniscient_types = ["ALIE", "IPM"]
 
 class AttackWrapperStrategy(Strategy):
     """
-    A wrapper strategy that intercepts fit_results before they are passed to the
-    underlying defense strategy. It separates benign and malicious results based on
-    partition ID, computes an omniscient attack over the benign results,
-    and manipulates the malicious results to mimic FL-Byzantine-Library's omniscient mode.
+    Omniscient Attack Wrapper Strategy.
+
+    Intercepts the federated aggregation pipeline before results reach the defense strategy.
+    It separates benign updates from malicious ones based on predefined client mappings, 
+    computes an omniscient attack (e.g., ALIE or IPM) using the exact knowledge of honest 
+    updates, and substitutes the malicious clients' data with the optimized poison vectors.
     """
 
     def __init__(self, base_strategy: Strategy):
@@ -91,13 +93,14 @@ class AttackWrapperStrategy(Strategy):
         benign_weights_list = [parameters_to_ndarrays(res.parameters) for _, res in benign_results]
 
         # 3. Apply Attack
-        if attack_type == "ALIE":
-            num_malicious_clients = len(malicious_results)
-            malicious_weights = alie_attack(benign_weights_list, num_malicious_clients, settings.attack.alie_z_max)
-        elif attack_type == "IPM":
-            if self.current_global_parameters is None:
-                raise ValueError("Global parameters not captured in configure_fit. Cannot execute IPM.")
-            malicious_weights = ipm_attack(benign_weights_list, self.current_global_parameters, settings.attack.epsilon)
+        match attack_type:
+            case "ALIE":
+                num_malicious_clients = len(malicious_results)
+                malicious_weights = alie_attack(benign_weights_list, num_malicious_clients, settings.attack.alie_z_max)
+            case "IPM":
+                if self.current_global_parameters is None:
+                    raise ValueError("Global parameters not captured in configure_fit. Cannot execute IPM.")
+                malicious_weights = ipm_attack(benign_weights_list, self.current_global_parameters, settings.attack.epsilon)
 
 
         # 4. Overwrite malicious results

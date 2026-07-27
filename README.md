@@ -13,7 +13,7 @@ This repository contains the implementation of the SecureFL federated learning f
 ├── config/             # YAML configurations for network architectures and labels
 ├── modules/            # Specialized AVISENCE models, losses, and custom trainers
 ├── src/                # Core Flower code and model logic
-│   ├── strategies/     # Flower server strategies (FedGreed, Loss-based Clustering, Mean, Trimmed-Mean, Median, Krum, Multi-Krum) 
+│   ├── strategies/     # Flower server strategies (FedGreed, Loss-based Clustering, Mean, Trimmed-Mean, Median, Krum, Multi-Krum, FoolsGold, FL-Defender, RFA) 
 ├── data/               # Preprocessed partitioned data for FL clients
 ├── scripts/            # Data partitioning, simulation and utility scripts
 ├── outputs/            # Timestamped outputs: logs, metrics, and best global model checkpoints per experiment
@@ -63,9 +63,10 @@ SecureFL supports 3D point cloud training for the AVISENCE project. To use it, s
 ```yaml
 use_case:
   name: "AVISENCE"
-  data_split: "iid" # non-iid or iid
+  data_split: "sensor" # [sensor, iid]
+  sensor_profiles:
+    # See config.yaml for detailed sensor simulation profiles (e.g., Blind-Class, Limited-Angle, Upper-View)
   data_config_path: "config/labels/semantic-poss.yaml"
-  model_architecture_config_path: "config/arch/LENet_poss.yaml"
   data_dir: "./avisence_datasets/poss/dataset/SemanticPOSS"
 ```
 Adding this block automatically configures the framework to load 3D data and run the proper 3D network model for the SemanticPOSS dataset.
@@ -76,7 +77,10 @@ Adding this block automatically configures the framework to load 3D data and run
 You can simulate Byzantine attacks within your federated learning network by modifying the `attack` section in `config.yaml`. The framework currently supports the following attacks:
 - **Sign Flip**: Malicious clients invert the sign of their model updates before sending them to the server.
 - **Label Flip**: Malicious clients flip the target labels of their local training dataset.
+- **Semantic-Label-Flip**: AVISENCE-specific attack that cleverly swaps object labels between different semantic categories based on the client's partition ID (e.g., disguising a vehicle as a human).
 - **Gaussian Noise**: Malicious clients introduce Gaussian noise (configured via `mean` and `std`) to their model weights.
+- **IPM (Inner Product Manipulation)**: An omniscient attack that computes a malicious update by pulling the global parameters in the opposite direction of the mean benign update.
+- **ALIE (A Little Is Enough)**: An omniscient attack that estimates the benign weight distribution and shifts the mean by a factor of standard deviations to introduce a controlled, stealthy bias.
 
 ### 4. Simulation Outputs
 At the end of a simulation, a new timestamped directory is created under the `outputs/` folder (e.g., `outputs/YYYY-MM-DD/HH-MM-SS/`). This directory contains the complete artifacts from that specific run, including:

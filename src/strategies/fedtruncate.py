@@ -17,6 +17,7 @@ from flwr.server.strategy.aggregate import aggregate_inplace
 from sklearn.cluster import KMeans
 from torch.utils.data import DataLoader, Subset
 
+from src.plot_utils import plot_metrics_scatter
 from src.models import set_weights
 from src.settings import settings
 from src.strategies.base_strategy import StrategyTrackingMixin
@@ -24,9 +25,14 @@ from src.task import create_run_dir, test
 
 
 class FedTruncateStrategy(StrategyTrackingMixin, FedAvg):
-    """FedTruncate: a truncation-based defense that rejects client models
-    whose validation loss exceeds a configurable threshold relative to the
-    current global model, with optional rollback protection.
+    """
+    FedTruncate Robust Aggregation Strategy.
+
+    A truncation-based defense mechanism that evaluates each client's update against a 
+    server-side validation dataset. It isolates and rejects client models whose validation 
+    loss exceeds a dynamically or statically configured threshold relative to the current 
+    global model, thereby mitigating targeted or untargeted poisoning. Includes rollback 
+    protection if no clients satisfy the criteria.
     """
 
     def __init__(self, *args, **kwargs):
@@ -57,14 +63,12 @@ class FedTruncateStrategy(StrategyTrackingMixin, FedAvg):
     def _apply_defence(
         self, results: list[tuple[ClientProxy, FitRes]], server_round: int = -1
     ) -> tuple[list[tuple[ClientProxy, FitRes]], int]:
-        """Evaluate, rank, and filter client updates by validation loss.
+        """
+        Evaluates, ranks, and filters client updates based on their centralized validation loss.
 
-        Args:
-            results: List of (ClientProxy, FitRes) tuples from clients.
-            server_round: Current server round.
-
-        Returns:
-            The filtered results and the number of selected clients.
+        :param results: A list of (ClientProxy, FitRes) tuples representing received client updates.
+        :param server_round: The current federated learning round.
+        :return: A tuple containing the filtered list of accepted client results and the integer count of selected clients.
         """
         updated_results = []
         for client_proxy, fit_res in results:
@@ -104,7 +108,7 @@ class FedTruncateStrategy(StrategyTrackingMixin, FedAvg):
         )
 
         try:
-            from src.plot_utils import plot_metrics_scatter
+
 
             losses_to_plot = [r[0] for r in updated_results]
             client_types = [r[1] for r in updated_results]
@@ -259,6 +263,9 @@ class FedTruncateStrategy(StrategyTrackingMixin, FedAvg):
 
         self.current_parameters = new_global_parameters
 
+        honest_mean_loss = float(np.mean(honest_losses)) if honest_losses else 0.0
+        malicious_mean_loss = float(np.mean(malicious_losses)) if malicious_losses else 0.0
+
         self._log_results(
             server_round=server_round,
             tag="fedtruncate_stats",
@@ -269,6 +276,8 @@ class FedTruncateStrategy(StrategyTrackingMixin, FedAvg):
                 "num_rejected_clients": rejected,
                 "rollback": rollback,
                 "gamma_t": gamma_t,
+                "honest_mean_loss": honest_mean_loss,
+                "malicious_mean_loss": malicious_mean_loss,
             },
         )
 

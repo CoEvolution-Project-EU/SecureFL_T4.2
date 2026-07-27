@@ -30,12 +30,14 @@ sys.excepthook = _global_value_error_handler
 
 def iid_partitioning(targets, num_clients):
     """
-    Splits dataset homogeneously among clients, ensuring each client gets
-    an equal number of samples per label.
+    Partitions a dataset homogeneously among clients to simulate an IID distribution.
 
-    :param targets: NumPy array of dataset labels
-    :param num_clients: Number of clients
-    :return: List of indices assigned to each client
+    Ensures that each client receives an exactly equal number of samples for every 
+    class label present in the dataset.
+
+    :param targets: A NumPy array containing the ground truth labels for the entire dataset.
+    :param num_clients: The total number of federated clients.
+    :return: A list of lists, where each inner list contains the dataset indices assigned to a client.
     """
     indices_by_class = defaultdict(list)
 
@@ -60,18 +62,15 @@ def iid_partitioning(targets, num_clients):
 
 def non_iid_partitioning(targets: np.ndarray, num_clients: int, alpha: float):
     """
-    Partition dataset indices among clients using a Dirichlet distribution to simulate non-IID label distribution.
+    Partitions a dataset among clients using a Dirichlet distribution to simulate non-IID data.
 
-    Each class's samples are split across clients based on proportions drawn from a Dirichlet distribution,
-    introducing controlled label imbalance and heterogeneity.
+    Introduces controlled label imbalance and statistical heterogeneity by allocating each 
+    class's samples across clients based on proportions drawn from a Dirichlet distribution.
 
-    Args:
-        targets (np.ndarray): Array of dataset labels.
-        num_clients (int): Number of clients to split the dataset into.
-        alpha (float): Dirichlet concentration parameter; lower values yield higher heterogeneity.
-
-    Returns:
-        List[List[int]]: A list of index lists, one per client, representing their data partitions.
+    :param targets: A NumPy array containing the ground truth labels for the dataset.
+    :param num_clients: The total number of federated clients.
+    :param alpha: The Dirichlet concentration parameter; lower values increase data heterogeneity.
+    :return: A list of lists, where each inner list contains the dataset indices assigned to a client.
     """
     num_classes = len(np.unique(targets))
     indices_by_class = defaultdict(list)

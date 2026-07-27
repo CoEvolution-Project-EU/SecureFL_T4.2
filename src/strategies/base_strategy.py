@@ -21,13 +21,23 @@ from src.task import create_run_dir
 
 
 class StrategyTrackingMixin:
-    """Mixin providing shared tracking, logging, and checkpointing for FL strategies."""
+    """
+    A foundational mixin providing shared infrastructure for all federated learning strategies.
+    
+    Centralizes boilerplate operations such as Weights & Biases (W&B) initialization, 
+    metric persistence, model checkpointing, and evaluation tracking, ensuring consistency 
+    across all custom FL strategies.
+    """
 
 
     def _setup_tracking(self, model_config) -> None:
-        """Initialize run directory, W&B, and metric tracking.
+        """
+        Initializes the tracking environment, including run directories and metric histories.
+        
+        Must be invoked within the `__init__` method of any inheriting strategy subclass 
+        immediately after calling `super().__init__()`.
 
-        Must be called from each subclass ``__init__`` after ``super().__init__``.
+        :param model_config: The global model configuration object.
         """
         self.model = model_config.model
 
@@ -40,7 +50,12 @@ class StrategyTrackingMixin:
         self.results: dict = {}
 
     def _init_wandb_project(self) -> None:
-        """Create a W&B run with a descriptive name derived from settings."""
+        """
+        Initializes a Weights & Biases tracking run with a dynamically generated name.
+        
+        The run name explicitly captures the model architecture, aggregation strategy, 
+        and the specific attack configuration to facilitate easy cross-experiment comparison.
+        """
         if settings.attack.type is not None:
             match settings.attack.type:
                 case "Semantic-Label-Flip" | "Sign-Flip" | "IPM" | "ALIE":
@@ -65,7 +80,13 @@ class StrategyTrackingMixin:
 
 
     def _log_results(self, server_round: int, tag: str, results_dict: dict) -> None:
-        """Persist results to disk and optionally log to W&B."""
+        """
+        Persists metrics to a local JSON file and optionally streams them to W&B.
+
+        :param server_round: The current federated learning round.
+        :param tag: A string prefix classifying the metrics (e.g., 'evaluate', 'fit').
+        :param results_dict: A dictionary of computed metrics to log.
+        """
         record = {"round": server_round, **results_dict}
         self.results.setdefault(tag, []).append(record)
         with open(f"{self.save_path}/results.json", "w", encoding="utf-8") as fp:
@@ -75,7 +96,13 @@ class StrategyTrackingMixin:
 
 
     def _update_best_acc(self, server_round: int, accuracy: float, parameters: Parameters) -> None:
-        """Save a model checkpoint when a new best accuracy is achieved."""
+        """
+        Monitors centralized evaluation accuracy and saves the model state if a new maximum is reached.
+
+        :param server_round: The current federated learning round.
+        :param accuracy: The newly computed centralized evaluation accuracy.
+        :param parameters: The model parameters associated with this accuracy.
+        """
         if accuracy > self.best_acc_so_far:
             self.best_acc_so_far = accuracy
             log(INFO, "💡 New best global model found: %f", accuracy)
@@ -92,7 +119,14 @@ class StrategyTrackingMixin:
 
 
     def evaluate(self, server_round: int, parameters: Parameters):
-        """Run centralized evaluation, track best accuracy/loss, and log results."""
+        """
+        Executes centralized evaluation by delegating to the underlying strategy, then tracks 
+        the best performing models.
+
+        :param server_round: The current federated learning round.
+        :param parameters: The aggregated global model parameters.
+        :return: A tuple containing the global loss and a dictionary of evaluation metrics.
+        """
         loss, metrics = super().evaluate(server_round, parameters)
         self._update_best_acc(server_round, metrics["centralized_accuracy"], parameters)
         if self.best_loss_so_far is None or loss <= self.best_loss_so_far:
@@ -106,7 +140,17 @@ class StrategyTrackingMixin:
         return loss, metrics
 
     def aggregate_evaluate(self, server_round: int, results, failures):
-        """Aggregate federated evaluation results and log them."""
+        """
+        Aggregates locally computed evaluation metrics from participating clients.
+        
+        Delegates the mathematical aggregation to the base strategy, then logs the resulting 
+        federated evaluation metrics to disk and W&B.
+
+        :param server_round: The current federated learning round.
+        :param results: A list of evaluation results returned by active clients.
+        :param failures: A list of failures encountered during client evaluation.
+        :return: A tuple of the aggregated federated loss and the corresponding metrics dictionary.
+        """
         loss, metrics = super().aggregate_evaluate(server_round, results, failures)
         self._log_results(
             server_round=server_round,

@@ -18,7 +18,13 @@ from src.strategies.base_strategy import StrategyTrackingMixin
 
 
 class BulyanStrategy(StrategyTrackingMixin, Bulyan):
-    """Bulyan strategy with result tracking, model checkpointing, and W&B logging."""
+    """
+    Bulyan robust aggregation strategy.
+
+    Inherits from the base Bulyan implementation to defend against Byzantine failures 
+    by first applying a robust pre-filtering rule (e.g., Krum) and then computing a 
+    trimmed mean over the surviving candidate updates.
+    """
 
     def __init__(self, *args, **kwargs):
         model_config = kwargs.pop("model_config", None)
@@ -35,7 +41,14 @@ class BulyanStrategy(StrategyTrackingMixin, Bulyan):
         results: list[tuple[ClientProxy, FitRes]],
         failures: list[Union[tuple[ClientProxy, FitRes], BaseException]],
     ) -> tuple[Optional[Parameters], dict[str, Scalar]]:
-        """Aggregate fit results using Bulyan."""
+        """
+        Executes robust aggregation using the two-step Bulyan algorithm.
+
+        :param server_round: The current federated learning round.
+        :param results: A list of parameter updates successfully received from active clients.
+        :param failures: A list of encountered errors or unresponsive clients.
+        :return: A tuple containing the aggregated global parameters and an empty metrics dictionary.
+        """
         if not results:
             return None, {}
         if not self.accept_failures and failures:

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,26 +9,29 @@ import numpy as np
 import torch
 import torch.nn as nn
 from loguru import logger
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 from yaml import safe_load
 
 from src.attacks import add_gaussian_noise, semantic_label_flip, flip_sign
 from src.models import ModelConfig
 from src.settings import settings
+import math
 
+from modules.utils import AverageMeter
+from src.plot_utils import initialize_video_writer, write_vision_frame_to_video, release_video_writer
 
-def get_device():
-    if torch.cuda.is_available():
-        return torch.device("cuda:0")
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        return torch.device("mps")
-    return torch.device("cpu")
-
+from src.utils import (
+    get_device,
+    _build_optimizer,
+    _apply_sensor_mask,
+    _resolve_video_filename,
+    _calc_combined_loss,
+)
 
 def train(
-    model,
-    train_loader,
+    model: nn.Module,
+    train_loader: DataLoader,
     client_type: str,
     lr: float,
     model_config: ModelConfig,
@@ -35,265 +39,133 @@ def train(
     partition_id: int = 0,
     sensor_config: dict = None,
     sequence_meta: dict = None,
-) -> None:
-    """AVISENCE-specific training pipeline for 3D point cloud segmentation."""
-    from modules.utils import AverageMeter
+) -> tuple[float, float, float]:
+    """
+    Executes the localized training loop for a client, encompassing data loading, optimization, and attacks.
 
+    Iterates through the provided dataloader for a specified number of epochs, applying 
+    sensor masking constraints and recording video frames. If the client is adversarial, 
+    post-training attacks (e.g., Sign-Flip, Gaussian noise) are injected.
+
+    :param model: The client's local PyTorch model to be trained.
+    :param train_loader: The dataloader providing local point cloud batches.
+    :param client_type: The alignment of the client ("Honest" or "Malicious").
+    :param lr: The learning rate for the optimizer.
+    :param model_config: The global model configuration containing loss modules.
+    :param attack_activated: A boolean flag signaling if malicious clients should execute their attacks.
+    :param partition_id: The client's unique identifier.
+    :param sensor_config: Constraints defining the client's simulated sensor degradation.
+    :param sequence_meta: Sequence mapping information for video generation and tracking.
+    :return: A tuple containing the final training loss, accuracy, and jaccard index (all zeroes currently).
+    """
+
+
+    # Device & model setup
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.to(device)
     model.train()
 
+    # Snapshot weights now so Sign-Flip can reference the pre-training state.
     original_weights = None
     if attack_activated and client_type == "Malicious" and settings.attack.type == "Sign-Flip":
-        original_weights = [param.data.clone() for param in model.parameters()]
+        original_weights = [p.data.clone() for p in model.parameters()]
 
-    criterion = settings.use_case.criterion
-    lovasz = settings.use_case.lovasz
+    # Loss functions, optimizer, and auxiliary-loss config
+    criterion   = settings.use_case.criterion
+    lovasz      = settings.use_case.lovasz
     boundary_loss = settings.use_case.boundary_loss
-    opt_name = settings.optimizer.name.lower()
-    if opt_name == "sgd":
-        optimizer = torch.optim.SGD(
-            model.parameters(),
-            lr=lr,
-            momentum=settings.optimizer.momentum,
-            weight_decay=settings.optimizer.weight_decay,
-            nesterov=settings.optimizer.nesterov,
-        )
-    elif opt_name == "adam":
-        optimizer = torch.optim.Adam(
-            model.parameters(), lr=lr, betas=settings.optimizer.betas, weight_decay=settings.optimizer.weight_decay
-        )
-    elif opt_name == "adamw":
-        optimizer = torch.optim.AdamW(
-            model.parameters(), lr=lr, betas=settings.optimizer.betas, weight_decay=settings.optimizer.weight_decay
-        )
-    else:
-        raise ValueError(f"Unknown optimizer: {opt_name}")
+    optimizer   = _build_optimizer(model, lr)
     use_aux_loss = settings.use_case.model_architecture_config["train"]["aux_loss"]["use"]
-    lamda = settings.use_case.model_architecture_config["train"]["aux_loss"]["lamda"]
+    lamda        = settings.use_case.model_architecture_config["train"]["aux_loss"]["lamda"]
 
-    import os
-    import json
+    # Video recording setup
     save_path = os.environ.get("RUN_SAVE_PATH")
-    should_record_video = False
-    
+    video_writer = None
     if save_path:
-        client_sensor_type = "standard"
-        if settings.use_case.data_split in ["non-iid", "inverse-non-iid"]:
-            label_category = (partition_id % 4) + 1
-            prefix = "category_" if settings.use_case.data_split == "non-iid" else "exclude_"
-            if label_category == 1:
-                client_sensor_type = f"{prefix}vehicle"
-            elif label_category == 2:
-                client_sensor_type = f"{prefix}human"
-            elif label_category == 3:
-                client_sensor_type = f"{prefix}ground"
-            elif label_category == 4:
-                client_sensor_type = f"{prefix}structure"
-        elif settings.use_case.data_split == "sensor" and sensor_config is not None:
-            raw_sensor_type = sensor_config.get("type", "standard")
-            sensor_labels = {
-                "standard":     "Full-View",
-                "directional":  "Limited Angle",
-                "narrow_fov_up": "Upper View",
-                "short_range":  "Short Range",
-            }
-            if raw_sensor_type == "blind_to_class":
-                blinded = sensor_config.get("blinded_category", "Unknown")
-                client_sensor_type = f"No-{blinded}"
-            else:
-                # E.g. "Upper View" will be "Upper_View" in the filename for CLI-friendliness, or just "Upper View"?
-                # The user asked to follow the similar naming, so let's keep it exact:
-                formatted_name = sensor_labels.get(raw_sensor_type, raw_sensor_type.replace('_', ' ').title())
-                client_sensor_type = formatted_name.replace(" ", "_")
-
-        if sequence_meta and sequence_meta.get("sequence") != "unknown":
-            seq = sequence_meta["sequence"]
-            part_idx = sequence_meta["part_idx"]
-            total_parts = sequence_meta["total_parts"]
-            if total_parts > 1:
-                filename = f"client_{partition_id}_seq_{seq}_part_{part_idx}of{total_parts}_{client_sensor_type}.mp4"
-            else:
-                filename = f"client_{partition_id}_seq_{seq}_{client_sensor_type}.mp4"
-        else:
-            filename = f"client_{partition_id}_{client_sensor_type}.mp4"
-            
+        filename, client_sensor_type = _resolve_video_filename(partition_id, sensor_config, sequence_meta)
         video_file = os.path.join(save_path, "client_videos", filename)
         if not os.path.exists(video_file):
-            should_record_video = True
+            video_writer = initialize_video_writer(save_path, partition_id, client_sensor_type, sequence_meta)
 
-    from src.plot_utils import initialize_video_writer, write_vision_frame_to_video, release_video_writer
-    
-    video_writer = None
-    if should_record_video:
-        video_writer = initialize_video_writer(save_path, partition_id, client_sensor_type, sequence_meta)
-
+    # Training loop
     for epoch in range(settings.client.local_epochs):
         losses = AverageMeter()
-        pbar = tqdm(
-            train_loader, desc=f"Client {partition_id} - Epoch {epoch + 1}/{settings.client.local_epochs}", ncols=100
+        pbar   = tqdm(
+            train_loader,
+            desc=f"Client {partition_id} - Epoch {epoch + 1}/{settings.client.local_epochs}",
+            ncols=100,
         )
         for batch_idx, (in_vol, proj_labels, _, _, _, _, proj_range, _, _, proj_xyz, _) in enumerate(pbar):
-            in_vol = in_vol.to(device)
+            # Move data to device.
+            in_vol      = in_vol.to(device)
             proj_labels = proj_labels.to(device).long()
-            proj_range = proj_range.to(device)
-            proj_xyz = proj_xyz.to(device)
+            proj_range  = proj_range.to(device)
+            proj_xyz    = proj_xyz.to(device)
 
             original_proj_labels = proj_labels.clone()
-            sensor_profile = "Standard"
+            sensor_profile = "Full-View"
 
-            if settings.use_case.data_split in ["non-iid", "inverse-non-iid"]:
-                label_category = (partition_id % 4) + 1
-                match label_category:
-                    case 1:
-                        # Vehicle: car (3), bike (12)
-                        target_classes = torch.tensor([3, 12], device=device)
-                        sensor_profile = "Vehicle"
-                    case 2:
-                        # Human: person/2+person (1), rider (2)
-                        target_classes = torch.tensor([1, 2], device=device)
-                        sensor_profile = "Human"
-                    case 3:
-                        # Ground: ground (13)
-                        target_classes = torch.tensor([13], device=device)
-                        sensor_profile = "Ground"
-                    case 4:
-                        # Structure: trunk (4), plants (5), traffic sign (6), pole (7),
-                        # trashcan (8), building (9), cone/stone (10), fence (11)
-                        target_classes = torch.tensor([4, 5, 6, 7, 8, 9, 10, 11], device=device)
-                        sensor_profile = "Structure"
-                
-                mask = torch.isin(proj_labels, target_classes)
-                if settings.use_case.data_split == "non-iid":
-                    proj_labels *= mask
-                    sensor_profile = f"Non-IID ({sensor_profile})"
-                else: # inverse-non-iid
-                    proj_labels = torch.where(mask, torch.zeros_like(proj_labels), proj_labels)
-                    sensor_profile = f"Inverse Non-IID (Exc. {sensor_profile})"
-                        
-            elif settings.use_case.data_split == "sensor" and sensor_config is not None:
-                sensor_type = sensor_config.get("type", "standard")
-                sensor_profile = {
-                    "standard":     "Full-View",
-                    "directional":  "Limited Angle",
-                    "narrow_fov_up": "Upper View",
-                    "short_range":  "Short Range",
-                }.get(sensor_type, sensor_type.replace('_', ' ').title())  # default, overridden below for blind_to_class
-                if sensor_type == "short_range":
-                    max_range = sensor_config.get("max_range", 20.0)
-                    mask = proj_range <= max_range
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                    # Optionally mask input volume as well
-                    in_vol = torch.where(mask.unsqueeze(1), in_vol, torch.zeros_like(in_vol))
-                elif sensor_type == "directional":
-                    fov = sensor_config.get("fov", 180.0)
-                    tilt = sensor_config.get("tilt", 0.0)
-                    # Use pixel-column masking on the cylindrical panorama.
-                    # The full image width (W) represents 360 degrees.
-                    # `tilt` shifts the center of the kept window (in degrees, 0=left edge).
-                    W = proj_labels.shape[-1]
-                    pixels_per_degree = W / 360.0
-                    half_fov_px = int((fov / 2.0) * pixels_per_degree)
-                    center_px = int((tilt / 360.0) * W) % W
-                    col_idx = torch.arange(W, device=device)  # (W,)
-                    # Compute circular distance from center pixel, handling wrap-around
-                    dist = ((col_idx - center_px + W // 2) % W) - W // 2
-                    col_mask = dist.abs() <= half_fov_px  # (W,)
-                    # Broadcast to (B, H, W)
-                    mask = col_mask.unsqueeze(0).unsqueeze(0).expand_as(proj_labels)
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                    in_vol = torch.where(mask.unsqueeze(1), in_vol, torch.zeros_like(in_vol))
-                elif sensor_type == "sparse":
-                    keep_ratio = sensor_config.get("keep_ratio", 0.5)
-                    mask = torch.rand_like(proj_labels.float()) <= keep_ratio
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                    in_vol = torch.where(mask.unsqueeze(1), in_vol, torch.zeros_like(in_vol))
-                elif sensor_type == "narrow_fov_up":
-                    z_threshold = sensor_config.get("z_threshold", 1.5)
-                    z_coords = proj_xyz[..., 2]  # (B, H, W)
-                    mask = z_coords >= z_threshold
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                    in_vol = torch.where(mask.unsqueeze(1), in_vol, torch.zeros_like(in_vol))
-                elif sensor_type == "blind_to_class":
-                    # Map human-readable category name to SemanticPOSS training class IDs.
-                    # Training IDs are derived from learning_map in semantic-poss.yaml:
-                    #   1=person, 2=rider, 3=car, 4=trunk, 5=plants, 6=traffic sign,
-                    #   7=pole, 8=trashcan, 9=building, 10=cone/stone, 11=fence,
-                    #   12=bike, 13=ground
-                    _CATEGORY_CLASS_IDS = {
-                        "Vehicle":   [3, 12],                    # car, bike
-                        "Human":     [1, 2],                     # person (1/2+), rider
-                        "Ground":    [13],                       # ground
-                        "Structure": [4, 5, 6, 7, 8, 9, 10, 11], # trunk, plants, signs, pole, trashcan, building, cone, fence
-                    }
-                    blinded_category = sensor_config.get("blinded_category", None)
-                    if blinded_category and blinded_category in _CATEGORY_CLASS_IDS:
-                        blinded_ids = _CATEGORY_CLASS_IDS[blinded_category]
-                        blind_mask = torch.isin(proj_labels, torch.tensor(blinded_ids, device=device))
-                        proj_labels = torch.where(blind_mask, torch.zeros_like(proj_labels), proj_labels)
-                        in_vol = torch.where(blind_mask.unsqueeze(1), torch.zeros_like(in_vol), in_vol)
-                        sensor_profile = f"No-{blinded_category}"
+            # Apply sensor-profile masking (simulates degraded LiDAR conditions).
+            if settings.use_case.data_split == "sensor" and sensor_config is not None:
+                sensor_type = sensor_config.get("type", "Full-View")
+                proj_labels, in_vol, sensor_profile = _apply_sensor_mask(
+                    sensor_type, sensor_config, proj_labels, proj_xyz, device,
+                    in_vol=in_vol,
+                )
 
-            if should_record_video and epoch == 0:
-                # Write visual frame directly to the video file
-                if video_writer is not None:
-                    write_vision_frame_to_video(video_writer, original_proj_labels, proj_labels, partition_id, batch_idx, sensor_profile)
+            # Record the first-epoch frames for the client video.
+            if video_writer is not None and epoch == 0:
+                write_vision_frame_to_video(
+                    video_writer, original_proj_labels, proj_labels,
+                    partition_id, batch_idx, sensor_profile,
+                )
 
+            # In-batch attack: applied to labels before the forward pass.
             if attack_activated and client_type == "Malicious":
                 match settings.attack.type:
                     case "Semantic-Label-Flip":
-                        proj_labels = semantic_label_flip(proj_labels, partition_id, device, model_config.num_classes)
+                        proj_labels = semantic_label_flip(
+                            proj_labels, partition_id, device, model_config.num_classes
+                        )
 
-            # Subsample the input volume to create a sparse lower-resolution tensor
+            # Subsample rows to create a lower-resolution input tensor.
             output_tensor = torch.zeros_like(in_vol)
-            low_res_index = torch.arange(0, 40, 4)
-            output_tensor[:, :, low_res_index, :] = in_vol[:, :, ::4, :].clone()
+            output_tensor[:, :, torch.arange(0, 40, 4), :] = in_vol[:, :, ::4, :].clone()
 
-            # Helper function to compute combined CrossEntropy and Lovasz loss
-            def calc_combined_loss(pred, target, lovasz_weight=1.0):
-                ce_loss = criterion(torch.log(pred.clamp(min=1e-8)).double(), target).float()
-                lv_loss = lovasz_weight * lovasz(pred, target)
-                return ce_loss + lv_loss
-
+            # Forward pass + loss computation.
             if use_aux_loss:
                 output, z2, z4, z8 = model(output_tensor)
-                
-                # Combine boundary losses from main output and auxiliary outputs
                 bd_loss = (
                     boundary_loss(output, proj_labels)
                     + lamda[0] * boundary_loss(z2, proj_labels)
                     + lamda[1] * boundary_loss(z4, proj_labels)
                     + lamda[2] * boundary_loss(z8, proj_labels)
                 )
-                
-                # Compute segmentation losses (with a 1.5 weight penalty for Lovasz loss)
-                loss_m0 = calc_combined_loss(output, proj_labels, lovasz_weight=1.5)
-                loss_m2 = calc_combined_loss(z2, proj_labels, lovasz_weight=1.5)
-                loss_m4 = calc_combined_loss(z4, proj_labels, lovasz_weight=1.5)
-                loss_m8 = calc_combined_loss(z8, proj_labels, lovasz_weight=1.5)
-                
-                # Total weighted sum of all losses
-                loss = loss_m0 + lamda[0] * loss_m2 + lamda[1] * loss_m4 + lamda[2] * loss_m8 + bd_loss
+                loss = (
+                    _calc_combined_loss(criterion, lovasz, output, proj_labels, lovasz_weight=1.5)
+                    + lamda[0] * _calc_combined_loss(criterion, lovasz, z2, proj_labels, lovasz_weight=1.5)
+                    + lamda[1] * _calc_combined_loss(criterion, lovasz, z4, proj_labels, lovasz_weight=1.5)
+                    + lamda[2] * _calc_combined_loss(criterion, lovasz, z8, proj_labels, lovasz_weight=1.5)
+                    + bd_loss
+                )
             else:
                 output, _ = model(output_tensor)
-                
-                bd_loss = boundary_loss(output, proj_labels)
-                seg_loss = calc_combined_loss(output, proj_labels, lovasz_weight=1.0)
-                
-                loss = seg_loss + bd_loss
+                bd_loss   = boundary_loss(output, proj_labels)
+                loss      = _calc_combined_loss(criterion, lovasz, output, proj_labels) + bd_loss
 
             optimizer.zero_grad()
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1, norm_type=2)
             optimizer.step()
+
             losses.update(loss.item(), in_vol.size(0))
             pbar.set_postfix({"Loss": losses.avg})
-            
-        if should_record_video and epoch == 0:
-            if video_writer is not None:
-                release_video_writer(video_writer)
 
-    # Post-training attacks: applied once after all local epochs complete.
+        # Release video writer after epoch 0 is fully processed.
+        if video_writer is not None and epoch == 0:
+            release_video_writer(video_writer)
+
+    # Post-training attacks: applied once after all local epochs
     if attack_activated and client_type == "Malicious":
         match settings.attack.type:
             case "Gaussian":
@@ -303,8 +175,19 @@ def train(
 
 
 def test(model: nn.Module, test_loader: DataLoader, evaluator: Any = None, call_desc: str = "") -> Tuple[Any, ...]:
-    """AVISENCE-specific evaluation pipeline for 3D point cloud segmentation."""
-    from modules.utils import AverageMeter
+    """
+    Evaluates the model's semantic segmentation performance on a validation dataset.
+
+    Computes loss, overall accuracy, and class-wise intersection-over-union (IoU) 
+    using the provided evaluator module.
+
+    :param model: The PyTorch model to be evaluated.
+    :param test_loader: The dataloader providing validation point cloud batches.
+    :param evaluator: An IoU evaluation tracker instance.
+    :param call_desc: A descriptive string for progress bar logging (e.g., "Server Evaluation").
+    :return: A tuple of the computed loss, overall accuracy, and mean Jaccard index.
+    """
+
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     model.eval()
@@ -340,7 +223,7 @@ def test(model: nn.Module, test_loader: DataLoader, evaluator: Any = None, call_
             losses.update(loss.mean().item(), in_vol.size(0))
             pbar.set_postfix({"loss": f"{losses.avg:.4f}"})
 
-    import math
+
     final_loss = losses.avg
     if math.isnan(final_loss) or math.isinf(final_loss):
         final_loss = 1e6  # Large penalty for completely shattered models (e.g., pure Gaussian noise)
@@ -360,8 +243,7 @@ def split_dataset_into_clients(dataset, num_clients):
     Assigns sequences to clients round-robin. If multiple clients are assigned the same sequence,
     the sequence's frames are split equally among them without overlapping.
     """
-    import os
-    import numpy as np
+
 
     if not hasattr(dataset, "scan_files"):
         # Fallback to standard IID split if scan_files is missing
@@ -434,7 +316,11 @@ current_run_save_path = None
 
 
 def create_run_dir() -> tuple[Path, str]:
-    """Create a directory where to save results from this run. Acts as a singleton."""
+    """
+    Creates and returns a uniquely timestamped directory to store artifacts from the current simulation.
+
+    :return: A tuple containing the Path object to the created directory and its string equivalent.
+    """
     global _run_dir_cache, current_run_save_path
     if _run_dir_cache is not None:
         return _run_dir_cache
@@ -453,7 +339,12 @@ def create_run_dir() -> tuple[Path, str]:
 
 
 def generate_assessment_report() -> None:
-    """Generates the assessment report JSON file and saves it in the current run's directory."""
+    """
+    Compiles and exports a JSON assessment report summarizing the simulation's configuration and results.
+    
+    The report details the model, use case, optimizer hyperparameters, and exact client data distributions 
+    in a standardized format suitable for backend parsing or auditing.
+    """
     global current_run_save_path
 
     if not current_run_save_path:
@@ -680,11 +571,18 @@ def generate_assessment_report() -> None:
         logger.error(f"Failed to save assessment report: {e}")
 
 def compute_exact_client_distributions(num_clients, num_classes, client_sensor_configs=None):
-    """Computes exact distribution of labels per client after applying sequence splits and sensor masks."""
-    import torch
-    from torch.utils.data import DataLoader, Subset
-    from tqdm import tqdm
-    from src.settings import settings
+    """
+    Calculates the exact, empirical distribution of class labels held by each client.
+
+    Accounts for both the sequential data splitting boundaries and the localized 
+    sensor degradation profiles (which may arbitrarily blind clients to certain classes).
+
+    :param num_clients: The total number of federated clients.
+    :param num_classes: The total number of unique object classes in the dataset.
+    :param client_sensor_configs: Optional dictionary mapping client IDs to their sensor constraints.
+    :return: A tuple containing the distribution counts per client and the split indices.
+    """
+
 
     dataset = settings.use_case.parser.train_dataset
     client_indices = split_dataset_into_clients(dataset, num_clients)
@@ -710,68 +608,12 @@ def compute_exact_client_distributions(num_clients, num_classes, client_sensor_c
             proj_range = proj_range.to(device)
             proj_xyz = proj_xyz.to(device)
             
-            if settings.use_case.data_split in ["non-iid", "inverse-non-iid"]:
-                label_category = (partition_id % 4) + 1
-                match label_category:
-                    case 1:
-                        # Vehicle: car (3), bike (12)
-                        target_classes = torch.tensor([3, 12], device=device)
-                    case 2:
-                        # Human: person/2+person (1), rider (2)
-                        target_classes = torch.tensor([1, 2], device=device)
-                    case 3:
-                        # Ground: ground (13)
-                        target_classes = torch.tensor([13], device=device)
-                    case 4:
-                        # Structure: trunk (4), plants (5), traffic sign (6), pole (7),
-                        # trashcan (8), building (9), cone/stone (10), fence (11)
-                        target_classes = torch.tensor([4, 5, 6, 7, 8, 9, 10, 11], device=device)
-                        
-                mask = torch.isin(proj_labels, target_classes)
-                if settings.use_case.data_split == "non-iid":
-                    proj_labels *= mask
-                else: # inverse-non-iid
-                    proj_labels = torch.where(mask, torch.zeros_like(proj_labels), proj_labels)
-                        
-            elif settings.use_case.data_split == "sensor" and sensor_config is not None:
-                sensor_type = sensor_config.get("type", "standard")
-                if sensor_type == "short_range":
-                    max_range = sensor_config.get("max_range", 20.0)
-                    mask = proj_range <= max_range
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                elif sensor_type == "directional":
-                    fov = sensor_config.get("fov", 180.0)
-                    tilt = sensor_config.get("tilt", 0.0)
-                    W = proj_labels.shape[-1]
-                    pixels_per_degree = W / 360.0
-                    half_fov_px = int((fov / 2.0) * pixels_per_degree)
-                    center_px = int((tilt / 360.0) * W) % W
-                    col_idx = torch.arange(W, device=device)
-                    dist = ((col_idx - center_px + W // 2) % W) - W // 2
-                    col_mask = dist.abs() <= half_fov_px
-                    mask = col_mask.unsqueeze(0).unsqueeze(0).expand_as(proj_labels)
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                elif sensor_type == "sparse":
-                    keep_ratio = sensor_config.get("keep_ratio", 0.5)
-                    mask = torch.rand_like(proj_labels.float()) <= keep_ratio
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                elif sensor_type == "narrow_fov_up":
-                    z_threshold = sensor_config.get("z_threshold", 1.5)
-                    z_coords = proj_xyz[..., 2]
-                    mask = z_coords >= z_threshold
-                    proj_labels = torch.where(mask, proj_labels, torch.zeros_like(proj_labels))
-                elif sensor_type == "blind_to_class":
-                    _CATEGORY_CLASS_IDS = {
-                        "Vehicle":   [3, 12],
-                        "Human":     [1, 2],
-                        "Ground":    [13],
-                        "Structure": [4, 5, 6, 7, 8, 9, 10, 11],
-                    }
-                    blinded_category = sensor_config.get("blinded_category", None)
-                    if blinded_category and blinded_category in _CATEGORY_CLASS_IDS:
-                        blinded_ids = _CATEGORY_CLASS_IDS[blinded_category]
-                        blind_mask = torch.isin(proj_labels, torch.tensor(blinded_ids, device=device))
-                        proj_labels = torch.where(blind_mask, torch.zeros_like(proj_labels), proj_labels)
+            if settings.use_case.data_split == "sensor" and sensor_config is not None:
+                sensor_type = sensor_config.get("type", "Full-View")
+                # Labels-only masking: in_vol is not needed for distribution counting.
+                proj_labels, _, _ = _apply_sensor_mask(
+                    sensor_type, sensor_config, proj_labels, proj_xyz, device
+                )
             
             # Count labels
             unique, counts = torch.unique(proj_labels, return_counts=True)
@@ -783,12 +625,16 @@ def compute_exact_client_distributions(num_clients, num_classes, client_sensor_c
 
 
 def compute_exact_server_distributions(num_classes):
-    """Computes exact true label distributions for the server's evaluation and defense datasets."""
-    import torch
-    import numpy as np
-    from torch.utils.data import DataLoader, Subset
-    from tqdm import tqdm
-    from src.settings import settings
+    """
+    Calculates the exact, empirical distribution of class labels within the server's datasets.
+
+    Counts instances across the designated centralized evaluation dataset and the independent 
+    defense validation dataset (used by robust aggregation strategies).
+
+    :param num_classes: The total number of unique object classes in the dataset.
+    :return: A tuple containing label counts for the evaluation and defense datasets.
+    """
+
 
     test_dataset = settings.use_case.parser.valid_dataset
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")

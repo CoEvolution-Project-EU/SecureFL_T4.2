@@ -11,10 +11,13 @@ from src.strategies.base_strategy import StrategyTrackingMixin
 
 
 class FoolsGoldStrategy(StrategyTrackingMixin, FedAvg):
-    """FoolsGold Strategy.
+    """
+    FoolsGold Robust Aggregation Strategy.
 
-    Mitigating Sybils in Federated Learning Poisoning.
-    Penalizes clients that submit highly similar gradients over time.
+    Defends against Sybil-based data poisoning attacks in Federated Learning. 
+    It evaluates the historical similarity of client gradient updates over time and 
+    penalizes clients (by downweighting their contribution) that submit highly correlated 
+    or identical gradients, a hallmark of colluding malicious actors.
     """
 
     def __init__(self, *args, **kwargs):
@@ -40,7 +43,13 @@ class FoolsGoldStrategy(StrategyTrackingMixin, FedAvg):
         return initial_parameters
 
     def _unflatten(self, flat_array: np.ndarray, reference_ndarrays: list) -> list:
-        """Reconstruct layer-wise weight arrays from a flat parameter vector."""
+        """
+        Reconstructs layer-wise weight arrays from a flattened 1D parameter vector.
+
+        :param flat_array: The 1D NumPy array containing the aggregated global weights.
+        :param reference_ndarrays: A list of original layer arrays used as a shape template.
+        :return: A list of NumPy arrays correctly reshaped for the PyTorch model.
+        """
         aggregated_ndarrays = []
         idx = 0
         for ref in reference_ndarrays:
@@ -50,6 +59,14 @@ class FoolsGoldStrategy(StrategyTrackingMixin, FedAvg):
         return aggregated_ndarrays
 
     def aggregate_fit(self, server_round: int, results, failures):
+        """
+        Executes robust aggregation using the FoolsGold similarity-penalization algorithm.
+
+        :param server_round: The current federated learning round.
+        :param results: A list of parameter updates successfully received from active clients.
+        :param failures: A list of encountered errors or unresponsive clients.
+        :return: A tuple containing the aggregated global parameters and an empty metrics dictionary.
+        """
         if not results and failures:
             return None, {}
         if not self.accept_failures and failures:
@@ -158,15 +175,25 @@ class FoolsGoldStrategy(StrategyTrackingMixin, FedAvg):
         # 5. Rescale so max weight is close to 1
         if np.max(wv) > 0:
             wv = wv / np.max(wv)
-        wv[wv == 1] = 0.99
-
-        # 6. # Apply logit transformation for smoother weighting
-        wv = np.log(wv / (1 - wv + self.epsilon)) + 0.5
-        wv[np.isinf(wv) | (wv > 1)] = 1
-        wv[wv < 0] = 0
+        # 6. (Removed logit transform and 0.99 cap to match reference implementation)
 
         trust_weights = wv
         flat_weights_valid = [flat_weights[i] for i in valid_indices]
+
+        # Log per-client trust weights
+        honest_trusts = []
+        malicious_trusts = []
+        for i, v_idx in enumerate(valid_indices):
+            tw = trust_weights[i]
+            mcs = maxcs[i]
+            client_proxy, fit_res = results[v_idx]
+            cid = fit_res.metrics.get("id", client_proxy.cid)
+            ctype = fit_res.metrics.get("client_type", "Unknown")
+            log(INFO, "[FoolsGold] Client %s (%s) Trust Weight: %.4f | Max Cosine Sim: %.4f", cid, ctype, tw, mcs)
+            if ctype == "Honest":
+                honest_trusts.append(tw)
+            elif ctype == "Malicious":
+                malicious_trusts.append(tw)
 
         # Weighted aggregation
         total_weight = trust_weights.sum()
@@ -185,6 +212,8 @@ class FoolsGoldStrategy(StrategyTrackingMixin, FedAvg):
         metrics_aggregated = {
             "FG-active-ratio": float(active_clients / n) if n > 0 else 0.0,
             "FG-mean-trust": mean_trust,
+            "FG-mean-honest-trust": float(np.mean(honest_trusts)) if honest_trusts else 0.0,
+            "FG-mean-malicious-trust": float(np.mean(malicious_trusts)) if malicious_trusts else 0.0,
         }
 
         self._log_results(

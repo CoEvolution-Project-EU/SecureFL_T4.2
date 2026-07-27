@@ -1,17 +1,51 @@
 import os
-import matplotlib.pyplot as plt
+import cv2
+import pandas as pd
 import numpy as np
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from matplotlib.ticker import FuncFormatter
+from matplotlib.colors import ListedColormap
+import seaborn as sns
+
 from flwr.common import parameters_to_ndarrays
 from logging import INFO, WARNING
 from flwr.common.logger import log
 
+from src.settings import settings
 def get_label_name(data_config, class_id):
+    """
+    Retrieves the human-readable string name for a given class ID.
+
+    Uses the dataset configuration to map internal class indices back to their semantic 
+    string representations (e.g., mapping class 1 to 'Person').
+
+    :param data_config: The dataset configuration dictionary containing label mappings.
+    :param class_id: The integer class ID to look up.
+    :return: The string name of the class, or a fallback 'Class X' string if not found.
+    """
     labels_dict = data_config.get("labels", {})
     inv_map = data_config.get("learning_map_inv", {})
     orig_id = inv_map.get(class_id, class_id)
     return labels_dict.get(orig_id, f"Class {class_id}")
 
 def plot_metrics_scatter(losses, parameters_list, client_types, selected_status, save_path, server_round):
+    """
+    Generates a scatter plot visualizing client updates in terms of loss versus magnitude.
+
+    This diagnostic plot helps identify malicious outliers by plotting each client's 
+    validation loss against the L2 norm of their parameter update.
+
+    :param losses: A list of validation losses for each client.
+    :param parameters_list: A list of client parameter updates.
+    :param client_types: A list of string labels ('Honest' or 'Malicious') for each client.
+    :param selected_status: A list of boolean flags indicating if the client's update was accepted.
+    :param save_path: The base directory where the plot will be saved.
+    :param server_round: The current federated learning round index.
+    """
     if not losses:
         return
 
@@ -80,14 +114,17 @@ def plot_metrics_scatter(losses, parameters_list, client_types, selected_status,
         log(WARNING, f"Failed to generate Metrics scatter plot: {e}")
 
 def generate_split_plot(def_counts, eval_counts, num_classes, save_dir):
-    """Generates and saves a heatmap comparing the defense and evaluation dataset distributions."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-    import pandas as pd
-    import numpy as np
-    from src.settings import settings
+    """
+    Generates and saves a heatmap comparing the defense and evaluation dataset distributions.
+
+    Visualizes the exact number of class instances present in both the defense validation 
+    set and the global evaluation set, aiding in the analysis of data splits and label imbalance.
+
+    :param def_counts: An array containing the label counts for the defense dataset.
+    :param eval_counts: An array containing the label counts for the evaluation dataset.
+    :param num_classes: The total number of unique classes.
+    :param save_dir: The directory where the resulting heatmap image will be saved.
+    """
 
     label_names = []
     if hasattr(settings, "use_case") and getattr(settings.use_case, "data_config", None):
@@ -121,7 +158,6 @@ def generate_split_plot(def_counts, eval_counts, num_classes, save_dir):
     fig_height = 4
     plt.figure(figsize=(fig_width, fig_height))
 
-    from matplotlib.ticker import FuncFormatter
 
     def human_format_tick(x, pos):
         if x == 0:
@@ -146,7 +182,7 @@ def generate_split_plot(def_counts, eval_counts, num_classes, save_dir):
 
     num_samples = np.sum(def_counts)
     pct = settings.defence.defence_dataset_percentage
-    plt.title(f"Server Dataset Distribution\ndefence_dataset_percentage={pct} (samples={num_samples})", fontsize=14)
+    plt.title(f"Server Dataset Distribution", fontsize=14)
 
     plt.xlabel("Class Label", fontsize=12)
     plt.xticks(rotation=45, ha='right', fontsize=9)
@@ -159,12 +195,19 @@ def generate_split_plot(def_counts, eval_counts, num_classes, save_dir):
 
 
 def generate_client_split_plot(client_distributions: dict, num_classes: int, save_dir, client_sensor_configs=None, client_indices=None, filename="client_split_distribution.png"):
-    """Generates and saves a heatmap showing the class distribution for each client."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import pandas as pd
-    import seaborn as sns
+    """
+    Generates and saves a comprehensive heatmap detailing the class distribution across all clients.
+
+    This visualization highlights non-IID data partitions by displaying exact label counts 
+    per client, and annotates clients with their assigned sensor degradation profiles (e.g., 'Blind-Class').
+
+    :param client_distributions: A dictionary mapping client IDs to their label count arrays.
+    :param num_classes: The total number of unique classes.
+    :param save_dir: The directory where the resulting heatmap image will be saved.
+    :param client_sensor_configs: Optional mapping of client IDs to their applied sensor profiles.
+    :param client_indices: Optional mapping detailing the specific data splits assigned to clients.
+    :param filename: The target filename for the generated plot.
+    """
 
     clients = sorted(list(client_distributions.keys()))
     num_clients = len(clients)
@@ -178,7 +221,6 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
             if cls_id < num_classes:
                 target_counts_per_client[i, cls_id] = count
 
-    from src.settings import settings
     label_names = []
     if hasattr(settings, "use_case") and getattr(settings.use_case, "data_config", None):
         data_config = settings.use_case.data_config
@@ -192,7 +234,7 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
     df = pd.DataFrame(target_counts_per_client.tolist(), columns=label_names)
 
     # Dynamically scale figure dimensions based on the number of clients and classes to prevent squishing
-    fig_width = max(14, num_clients * 0.8)
+    fig_width = max(14, num_clients * 0.9)
     fig_height = max(8, num_classes * 0.25)
     plt.figure(figsize=(fig_width, fig_height))
 
@@ -214,7 +256,6 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
                 else:
                     annot_data[i, j] = str(val)
 
-    from matplotlib.ticker import FuncFormatter
 
     def human_format_tick(x, pos):
         if x == 0:
@@ -231,44 +272,27 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
     sns.heatmap(
         df.T,
         annot=annot_data,
+        annot_kws={"size": 12, "weight": "bold"},
         fmt="",
         cmap="Blues",
         cbar_kws={"label": "Label Count", "format": cbar_formatter},
         linewidths=0.5,
         square=False,
     )
-    plt.xlabel("Partition ID (Sensor Profile)")
-    plt.ylabel("Labels")
+    plt.xlabel("Partition ID", fontsize=14)
+    plt.ylabel("Labels", fontsize=14)
 
     x_labels = []
     for c in clients:
         label = str(c)
-        data_split = getattr(settings.use_case, "data_split", None) if hasattr(settings, "use_case") else None
-        if data_split in ["non-iid", "inverse-non-iid"]:
-            label_category = (c % 4) + 1
-            prefix = "Categ: " if data_split == "non-iid" else "Excluded: "
-            if label_category == 1:
-                label += f"\n{prefix}Vehicle"
-            elif label_category == 2:
-                label += f"\n{prefix}Human"
-            elif label_category == 3:
-                label += f"\n{prefix}Ground"
-            elif label_category == 4:
-                label += f"\n{prefix}Structure"
-        elif client_sensor_configs and c in client_sensor_configs:
+        if client_sensor_configs and c in client_sensor_configs:
             cfg = client_sensor_configs[c]
-            sensor_type = cfg.get("type", "standard")
-            sensor_labels = {
-                "standard":     "Full-View",
-                "directional":  "Limited Angle",
-                "narrow_fov_up": "Upper View",
-                "short_range":  "Short Range",
-            }
-            if sensor_type == "blind_to_class":
+            sensor_type = cfg.get("type", "Full-View")
+            if sensor_type == "Blind-Class":
                 blinded = cfg.get("blinded_category", "?")
                 label += f"\nNo-{blinded}"
             else:
-                label += f"\n{sensor_labels.get(sensor_type, sensor_type.replace('_', ' ').title())}"
+                label += f"\n{sensor_type}"
             
         if client_indices and c < len(client_indices):
             seq = client_indices[c].get("sequence", "")
@@ -282,17 +306,27 @@ def generate_client_split_plot(client_distributions: dict, num_classes: int, sav
 
         x_labels.append(label)
 
-    plt.xticks(np.arange(num_clients) + 0.5, x_labels, rotation=90, ha='center', fontsize=max(6, 11 - (num_clients // 20)))
-    plt.yticks(rotation=0, fontsize=max(5, 11 - (num_classes // 25)))
+    plt.xticks(np.arange(num_clients) + 0.5, x_labels, rotation=90, ha='center', fontsize=max(9, 14 - (num_clients // 20)))
+    plt.yticks(rotation=0, fontsize=max(8, 14 - (num_classes // 25)))
     plt.tight_layout()
 
     out_path = save_dir / filename
     plt.savefig(out_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-def initialize_video_writer(save_dir, client_id, sensor_type="standard", sequence_meta=None, fps=1, width=1500, height=800):
-    import cv2
-    import os
+def initialize_video_writer(save_dir, client_id, sensor_type="Full-View", sequence_meta=None, fps=1, width=1500, height=800):
+    """
+    Initializes an OpenCV VideoWriter for recording a client's localized training progress.
+
+    :param save_dir: The directory where the video file will be saved.
+    :param client_id: The ID of the client generating the video.
+    :param sensor_type: The applied sensor profile, used for the filename.
+    :param sequence_meta: Metadata linking the client to a specific dataset sequence.
+    :param fps: The frames-per-second rate of the output video.
+    :param width: The horizontal resolution of the video.
+    :param height: The vertical resolution of the video.
+    :return: An initialized cv2.VideoWriter object, or None if OpenCV is unavailable.
+    """
     vid_dir = os.path.join(save_dir, "client_videos")
     os.makedirs(vid_dir, exist_ok=True)
     
@@ -312,12 +346,19 @@ def initialize_video_writer(save_dir, client_id, sensor_type="standard", sequenc
     return cv2.VideoWriter(out_path, fourcc, fps, (width, height))
 
 def write_vision_frame_to_video(video_writer, original_proj_labels, masked_proj_labels, client_id, frame_idx, sensor_profile="Standard"):
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
-    import numpy as np
-    from src.settings import settings
+    """
+    Renders and appends a single comparative frame to the client's training visualization video.
+
+    The generated frame places the original (unmasked) ground truth alongside the 
+    masked version perceived by the client, annotating it with the active sensor profile.
+
+    :param video_writer: The active cv2.VideoWriter instance.
+    :param original_proj_labels: The unmasked, original projected labels tensor.
+    :param masked_proj_labels: The sensor-masked projected labels tensor.
+    :param client_id: The ID of the client producing the frame.
+    :param frame_idx: The current batch/frame index.
+    :param sensor_profile: The string identifier of the applied sensor mask.
+    """
 
     orig_label_map = original_proj_labels.cpu().numpy()
     masked_label_map = masked_proj_labels.cpu().numpy()
@@ -351,7 +392,6 @@ def write_vision_frame_to_video(video_writer, original_proj_labels, masked_proj_
             cmap_fallback = plt.cm.get_cmap("tab20", num_classes)
         colors = [cmap_fallback(i) for i in range(num_classes)]
 
-    from matplotlib.colors import ListedColormap
     cmap = ListedColormap(colors)
 
     # Set DPI and figsize so width x height matches video writer (1500x800)
@@ -380,12 +420,16 @@ def write_vision_frame_to_video(video_writer, original_proj_labels, masked_proj_
     rgba = np.asarray(fig.canvas.buffer_rgba())
     
     # Convert RGBA to BGR for OpenCV
-    import cv2
     img_bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
     video_writer.write(img_bgr)
     
     plt.close(fig)
 
 def release_video_writer(video_writer):
+    """
+    Safely finalizes and releases the OpenCV VideoWriter resources.
+
+    :param video_writer: The cv2.VideoWriter instance to release.
+    """
     if video_writer is not None:
         video_writer.release()

@@ -2,6 +2,8 @@ import numpy as np
 import scipy.stats as stats
 import torch
 
+from src.models import get_avisence_model_config
+
 from src.settings import settings
 
 
@@ -11,14 +13,17 @@ def semantic_label_flip(
     labels: torch.tensor, partition_id: int, device: torch.device, total_number_classes: int
 ) -> torch.tensor:
     """
-    Performs a Cross-Category Semantic Identity Attack (AVISENCE-specific).
-    Swaps labels between different semantic groups and zeros out everything else.
+    Performs a Cross-Category Semantic Identity Attack by manipulating class labels.
+    
+    This AVISENCE-specific attack swaps object labels between different semantic 
+    categories based on the client's partition ID (e.g., disguising a vehicle as a human). 
+    Non-targeted classes are zeroed out to exclusively highlight the malicious objects.
 
-    :param labels: Tensor of class labels.
-    :param partition_id: ID of the client (used to determine category).
-    :param device: Torch device.
-    :param total_number_classes: Total classes.
-    :return: Attacked labels.
+    :param labels: The tensor of ground-truth class labels.
+    :param partition_id: The ID of the client, determining the specific semantic confusion strategy.
+    :param device: The PyTorch device for tensor operations.
+    :param total_number_classes: The total number of available classes.
+    :return: A tensor of maliciously manipulated labels.
     """
     label_category = (partition_id % 3) + 1
 
@@ -69,10 +74,14 @@ def semantic_label_flip(
 
 def flip_sign(parameters, original_weights, scale_factor=-1.0):
     """
-    Performs a true Sign-Flip attack by negating the gradient update.
-    :param parameters: Model parameters after local training
-    :param original_weights: Model parameters before local training
-    :param scale_factor: Intensity of the flip (default -1.0 for true sign flip)
+    Executes a true Sign-Flip attack by negating the client's gradient updates.
+    
+    This defense-evasion technique subtly alters the local model weights by scaling 
+    the parameter updates negatively prior to server aggregation.
+
+    :param parameters: The local model parameters after training.
+    :param original_weights: The global model parameters before training began.
+    :param scale_factor: The intensity multiplier for the flip (defaults to -1.0).
     """
     for param, orig_param in zip(parameters, original_weights):
         update = param.data - orig_param
@@ -81,10 +90,12 @@ def flip_sign(parameters, original_weights, scale_factor=-1.0):
 
 def add_gaussian_noise(parameters):
     """
-    Adds Gaussian noise to model weights after local training.
-    To prevent numerical overflows (NaN) in deep architectures, the noise
-    is scaled proportionally to each layer's own standard deviation.
-    :param parameters: Model parameters
+    Injects absolute Gaussian noise into the trained model parameters.
+    
+    This attack degrades model utility by adding normally distributed noise to the 
+    weights, with parameters dictated by the global attack configuration.
+
+    :param parameters: The model parameters to perturb.
     """
     parameters = list(parameters)
 
@@ -92,17 +103,8 @@ def add_gaussian_noise(parameters):
     mean = settings.attack.mean
 
     for param in parameters:
-        # Calculate the standard deviation of the current layer's weights
-        param_std = torch.std(param.data)
-        if param_std.item() == 0 or torch.isnan(param_std):
-            param_std = 1.0  # Fallback to avoid zeroes or NaNs
-
-        # Scale the requested mean and sigma by the layer's actual magnitude
-        scaled_sigma = sigma * param_std
-        scaled_mean = mean * param_std
-
-        # Generate and add the relative noise
-        noise = (torch.randn_like(param.data) * scaled_sigma) + scaled_mean
+        # Generate and add absolute noise directly
+        noise = (torch.randn_like(param.data) * sigma) + mean
         param.data += noise
 
 
@@ -112,7 +114,12 @@ def add_gaussian_noise(parameters):
 def aggregate_benign_weights(
     benign_weights: list[list[np.ndarray]],
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
-    """Returns the mean and std of benign weights across clients for each layer."""
+    """
+    Aggregates a set of benign model updates to compute layer-wise statistics.
+
+    :param benign_weights: A list of client weight updates.
+    :return: A tuple containing lists of mean weights and standard deviations per layer.
+    """
     num_layers = len(benign_weights[0])
     mean_weights = []
     std_weights = []
@@ -127,8 +134,15 @@ def aggregate_benign_weights(
 
 def alie_attack(benign_weights: list[list[np.ndarray]], num_malicious: int, z_max: float = None) -> list[np.ndarray]:
     """
-    A Little Is Enough (ALIE) attack.
-    Shifts the benign mean by z_max * std.
+    Executes the A Little Is Enough (ALIE) attack on aggregated benign weights.
+    
+    This omniscient attack estimates the benign weight distribution and shifts the mean 
+    by a factor of standard deviations to introduce a controlled, stealthy bias.
+
+    :param benign_weights: A list of honest client weight updates.
+    :param num_malicious: The total number of malicious clients colluding in the attack.
+    :param z_max: The standard deviation scaling factor (calculated automatically if None).
+    :return: A list of maliciously perturbed weight arrays.
     """
     n = len(benign_weights) + num_malicious
     m = num_malicious
@@ -144,8 +158,6 @@ def alie_attack(benign_weights: list[list[np.ndarray]], num_malicious: int, z_ma
             z_max = float(stats.norm.ppf(cdf_value))
 
     mean, std = aggregate_benign_weights(benign_weights)
-
-    from src.models import get_avisence_model_config
 
     model_config = get_avisence_model_config(settings)
     keys = list(model_config.model.state_dict().keys())
@@ -165,12 +177,17 @@ def ipm_attack(
     benign_weights: list[list[np.ndarray]], global_weights: list[np.ndarray], epsilon: float
 ) -> list[np.ndarray]:
     """
-    Inner Product Manipulation (IPM) attack.
-    Returns W_global - epsilon * mean(honest_updates)
+    Executes the Inner Product Manipulation (IPM) attack against the global model.
+    
+    This omniscient attack computes a malicious update by pulling the global parameters 
+    in the opposite direction of the mean benign update, scaled by an epsilon factor.
+
+    :param benign_weights: A list of honest client weight updates.
+    :param global_weights: The current parameters of the central global model.
+    :param epsilon: The scaling factor determining the magnitude of the attack vector.
+    :return: A list of maliciously constructed weight arrays.
     """
     mean_weights, _ = aggregate_benign_weights(benign_weights)
-
-    from src.models import get_avisence_model_config
 
     model_config = get_avisence_model_config(settings)
     keys = list(model_config.model.state_dict().keys())

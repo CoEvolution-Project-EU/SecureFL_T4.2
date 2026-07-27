@@ -18,6 +18,7 @@ from flwr.server.strategy import FedAvg
 from flwr.server.strategy.aggregate import aggregate_inplace
 from torch.utils.data import DataLoader, Subset
 
+from src.plot_utils import plot_metrics_scatter
 from src.models import set_weights
 from src.settings import settings
 from src.strategies.base_strategy import StrategyTrackingMixin
@@ -25,10 +26,13 @@ from src.task import create_run_dir, test
 
 
 class FedGreed(StrategyTrackingMixin, FedAvg):
-    """Robust FL strategy using greedy refinement on server-side validation loss.
+    """
+    FedGreed Robust Aggregation Strategy.
 
-    Ranks client updates by individual validation loss, then iteratively searches
-    for the best aggregate by adding clients until loss increases.
+    Employs a greedy search algorithm over server-side validation loss to identify the 
+    optimal subset of honest clients. It ranks individual client updates by loss, then 
+    iteratively aggregates them in order, stopping when the inclusion of the next client 
+    causes the combined validation loss to strictly increase.
     """
 
     def __init__(self, *args, **kwargs):
@@ -46,15 +50,13 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
             shuffle=False,
         )
 
-    def _apply_defence(self, results: list[tuple[ClientProxy, FitRes]], server_round: int = -1):
-        """Rank clients by validation loss and greedily select the best subset.
+    def _apply_defence(self, results: list[tuple[ClientProxy, FitRes]], server_round: int = -1) -> tuple[Parameters, int, float, float]:
+        """
+        Ranks clients by individual validation loss and executes the greedy selection protocol.
 
-        Args:
-            results: List of (ClientProxy, FitRes) tuples from clients.
-            server_round: Current server round (used for plot filenames).
-
-        Returns:
-            Aggregated parameters and the number of selected clients.
+        :param results: A list of (ClientProxy, FitRes) tuples representing received client updates.
+        :param server_round: The current federated learning round (used for plot generation).
+        :return: A tuple containing the greedily aggregated global parameters and the integer count of selected clients.
         """
         updated_results = []
         for client_proxy, fit_res in results:
@@ -66,8 +68,20 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
         updated_results = sorted(updated_results, key=lambda x: x[0])
         ordered_losses = [r[0] for r in updated_results]
 
-        honest_losses = [f"{loss:.4f}" for loss, ctype, _, _ in updated_results if ctype == "Honest"]
-        malicious_losses = [f"{loss:.4f}" for loss, ctype, _, _ in updated_results if ctype == "Malicious"]
+        honest_raw_losses = [loss for loss, ctype, _, _ in updated_results if ctype == "Honest"]
+        malicious_raw_losses = [loss for loss, ctype, _, _ in updated_results if ctype == "Malicious"]
+        
+        honest_mean_loss = float(np.mean(honest_raw_losses)) if honest_raw_losses else 0.0
+        malicious_mean_loss = float(np.mean(malicious_raw_losses)) if malicious_raw_losses else 0.0
+
+        honest_losses = [
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results if ctype == "Honest"
+        ]
+        malicious_losses = [
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results if ctype == "Malicious"
+        ]
 
         log(
             INFO,
@@ -83,10 +97,12 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
         parameters_aggregated, num_selected_clients = self._select_best_aggregation_by_loss(results_no_loss)
 
         accepted_honest = [
-            f"{loss:.4f}" for loss, ctype, _, _ in updated_results[:num_selected_clients] if ctype == "Honest"
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results[:num_selected_clients] if ctype == "Honest"
         ]
         accepted_malicious = [
-            f"{loss:.4f}" for loss, ctype, _, _ in updated_results[:num_selected_clients] if ctype == "Malicious"
+            f"(cid: {res.metrics.get('id', client.cid)}, loss: {loss:.4f})"
+            for loss, ctype, client, res in updated_results[:num_selected_clients] if ctype == "Malicious"
         ]
         strategy_name = self.__class__.__name__
         log(
@@ -105,8 +121,6 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
         )
 
         try:
-            from src.plot_utils import plot_metrics_scatter
-
             losses_to_plot = [r[0] for r in updated_results]
             client_types = [r[1] for r in updated_results]
             parameters_list = [r[3].parameters for r in updated_results]
@@ -118,7 +132,7 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
             log(WARNING, "Metrics plotting failed: %s", e)
 
         log(INFO, "[FedGreed] Greedy search selected %d clients for aggregation.", num_selected_clients)
-        return parameters_aggregated, num_selected_clients
+        return parameters_aggregated, num_selected_clients, honest_mean_loss, malicious_mean_loss
 
     @staticmethod
     def _aggregate_mean(results: list[tuple[ClientProxy, FitRes]]) -> NDArrays:
@@ -187,7 +201,15 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
         )
 
         if settings.defence.activation_round != 0 and server_round >= settings.defence.activation_round:
-            parameters_aggregated, num_selected_clients = self._apply_defence(results, server_round)
+            parameters_aggregated, num_selected_clients, honest_mean_loss, malicious_mean_loss = self._apply_defence(results, server_round)
+            self._log_results(
+                server_round=server_round,
+                tag="attack_stats",
+                results_dict={
+                    "honest_mean_loss": honest_mean_loss,
+                    "malicious_mean_loss": malicious_mean_loss,
+                },
+            )
         else:
             num_selected_clients = 0
             parameters_aggregated = ndarrays_to_parameters(aggregate_inplace(results))
@@ -198,7 +220,7 @@ class FedGreed(StrategyTrackingMixin, FedAvg):
             results_dict={"num_selected_clients": num_selected_clients},
         )
 
-        metrics_aggregated = {}
+        metrics_aggregated = {"num_selected_clients": num_selected_clients}
         if server_round == 1:
             log(WARNING, "No fit_metrics_aggregation_fn provided")
 
